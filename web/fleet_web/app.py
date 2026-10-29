@@ -26,6 +26,7 @@ OPEN_PATHS = {"/login", "/healthz", "/manifest.webmanifest", "/sw.js"}
 FLEETD_SOCK = os.environ.get("FLEETD_SOCK", "/run/fleet/fleetd.sock")
 # Devices tab: CPU, memory, disk and GPUs only when installed with --show-hardware.
 SHOW_HARDWARE = os.environ.get("FLEET_SHOW_HARDWARE") == "1"
+VERSION = os.environ.get("FLEET_VERSION", "dev")
 INSTALL_URL = os.environ.get("FLEET_INSTALL_URL", "https://raw.githubusercontent.com/kahngjoonkoh/fleet/main/install.sh")
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
        "manifest-src 'self'; worker-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
@@ -84,7 +85,8 @@ class Throttle:
 
 def render(request, name, status=200, **ctx):
     user = request.get("user")
-    html = templates.get_template(name).render(user=user, csrf=user["csrf"] if user else "", **ctx)
+    html = templates.get_template(name).render(user=user, csrf=user["csrf"] if user else "",
+                                               updates=request.app.get("update_count", 0), **ctx)
     return web.Response(text=html, content_type="text/html", status=status)
 
 
@@ -263,19 +265,51 @@ async def user_action(request):
     return users_page(request, issued=issued)
 
 
+async def fleetd_get(path, **params):
+    async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(FLEETD_SOCK),
+                                     timeout=aiohttp.ClientTimeout(total=25)) as session:
+        async with session.get("http://fleetd" + path, params=params) as r:
+            return await r.json()
+
+
+def update_command(source, hub):
+    """What to run on a machine to update it: the curl line, or git pull in the checkout it came from."""
+    if not source or source.endswith("/.local/share/fleet/src"):
+        return f"curl -fsSL {INSTALL_URL} | sh" + (" -s -- --hub" if hub else "")
+    return f"cd {source} && git pull && ./install.sh" + (" --hub" if hub else "")
+
+
+async def check_devices(app):
+    """Devices running Fleet, each with its update status; also refreshes the header's update dot."""
+    devices = (await fleetd_get("/devices", hardware=int(SHOW_HARDWARE)))["devices"]
+    # Only machines running Fleet; ones merely reachable over ssh stay off the list.
+    devices = [d for d in devices if not d["online"] or d["info"]["fleetd"] != "not installed"]
+    web_update = (await fleetd_get("/update", version=VERSION))["update"]
+    for d in devices:
+        if d["local"] and web_update and web_update["available"] and not (d["update"] or {}).get("available"):
+            d["update"] = web_update
+        d["update_cmd"] = update_command((d.get("info") or {}).get("fleet_source"), d["local"])
+    app["update_count"] = sum(bool((d["update"] or {}).get("available")) for d in devices)
+    return devices
+
+
+async def watch_updates(app):
+    while True:
+        try:
+            await check_devices(app)
+        except (aiohttp.ClientError, OSError, TimeoutError, KeyError):
+            pass
+        await asyncio.sleep(1800)
+
+
 async def devices_page(request):
     error = None
     try:
-        async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(FLEETD_SOCK),
-                                         timeout=aiohttp.ClientTimeout(total=25)) as session:
-            async with session.get("http://fleetd/devices", params={"hardware": int(SHOW_HARDWARE)}) as r:
-                devices = (await r.json())["devices"]
+        devices = await check_devices(request.app)
     except (aiohttp.ClientError, OSError, TimeoutError, KeyError):
         devices, error = [], "fleetd isn't answering on this host."
-    # Only machines running Fleet; ones merely reachable over ssh stay off the list.
-    devices = [d for d in devices if not d["online"] or d["info"]["fleetd"] != "not installed"]
     return render(request, "devices.html", tab="devices", error=error, devices=devices, hardware=SHOW_HARDWARE,
-                  install_cmd=f"curl -fsSL {INSTALL_URL} | sh")
+                  web_version=VERSION, install_cmd=f"curl -fsSL {INSTALL_URL} | sh")
 
 
 async def terminal_page(request):
@@ -335,6 +369,13 @@ def make_app():
     app = web.Application(middlewares=[security], client_max_size=64 * 1024)
     app["db"] = store.connect()
     app["throttle"] = Throttle()
+
+    async def background(app):
+        task = asyncio.create_task(watch_updates(app))
+        yield
+        task.cancel()
+
+    app.cleanup_ctx.append(background)
     app.router.add_get("/login", login_page)
     app.router.add_post("/login", login)
     app.router.add_post("/logout", logout)

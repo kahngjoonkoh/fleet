@@ -91,6 +91,11 @@ def _fleetd():
     return state
 
 
+def _state(name):
+    state = os.environ.get("FLEET_STATE_DIR", os.path.expanduser("~/.local/state/fleet"))
+    return _read(os.path.join(state, name)).strip() or None
+
+
 def _hardware():
     home = os.path.expanduser("~")
     disks = [d for d in (_disk("/"), _disk(home)) if d]
@@ -119,6 +124,8 @@ def collect(hardware=False):
         "tmux_sessions": tmux.splitlines() if tmux else [],
         "claude_processes": _claude_processes(),
         "fleetd": _fleetd(),
+        "fleetd_version": _state("version"),
+        "fleet_source": _state("source"),
         "collected_at": int(time.time()),
     }
     if hardware:

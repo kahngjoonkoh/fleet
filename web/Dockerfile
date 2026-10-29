@@ -5,6 +5,8 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
  && useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin fleet \
  && mkdir /data && chown fleet:fleet /data
 COPY fleet_web /app/fleet_web
+ARG FLEET_VERSION=dev
+ENV FLEET_VERSION=$FLEET_VERSION
 WORKDIR /app
 USER fleet
 EXPOSE 8080

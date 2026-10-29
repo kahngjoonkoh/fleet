@@ -3,7 +3,10 @@
 name: fleet
 services:
   fleet-web:
-    build: ./web
+    build:
+      context: ./web
+      args:
+        FLEET_VERSION: ${FLEET_VERSION:-dev}
     image: fleet-web:local
     container_name: fleet-web
     restart: unless-stopped

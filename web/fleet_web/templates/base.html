@@ -24,7 +24,7 @@
   <a class="brand" href="/">Fleet</a>
   <nav>
     <a href="/"{% if tab == "instances" %} aria-current="page"{% endif %}>Instances</a>
-    <a href="/devices"{% if tab == "devices" %} aria-current="page"{% endif %}>Devices</a>
+    <a href="/devices"{% if tab == "devices" %} aria-current="page"{% endif %}>Devices{% if updates %}<span class="dot" title="Update available" aria-label="(update available)"></span>{% endif %}</a>
     {% if user.is_admin %}<a href="/terminal"{% if tab == "terminal" %} aria-current="page"{% endif %}>Terminal</a>{% endif %}
   </nav>
   <details class="menu">

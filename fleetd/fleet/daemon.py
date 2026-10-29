@@ -7,6 +7,7 @@ import json
 import os
 import pty
 import pwd
+import re
 import signal
 import socket
 import struct
@@ -14,9 +15,10 @@ import termios
 import time
 from pathlib import Path
 
+import aiohttp
 from aiohttp import WSMsgType, web
 
-from . import SOCKET, STATE_DIR, config, info
+from . import GITHUB_REPO, SOCKET, STATE_DIR, config, info
 
 HOST = socket.gethostname()
 INFO_SCRIPT = Path(info.__file__).read_bytes()
@@ -50,6 +52,42 @@ async def probe(device, hardware):
         return entry | {"online": False, "error": str(e)}
 
 
+_compare_cache = {}  # commit -> (expires, result)
+
+
+async def update_status(version):
+    """How a version like 0.1.0+bcb752b compares with main on GitHub:
+    {"available": bool, "behind_by": n}, or None if unknown (no commit, not pushed, GitHub unreachable)."""
+    m = re.search(r"\+([0-9a-f]{7,40})", version or "")
+    if not m:
+        return None
+    commit = m.group(1)
+    hit = _compare_cache.get(commit)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/compare/{commit}...main"
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as s:
+            async with s.get(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "fleetd"}) as r:
+                if r.status == 404:  # a commit GitHub doesn't have, e.g. not pushed yet
+                    result = None
+                elif r.status == 200:
+                    j = await r.json()
+                    # base=installed, head=main: main "ahead" (or "diverged") means newer commits exist.
+                    result = {"available": j["ahead_by"] > 0, "behind_by": j["ahead_by"]}
+                else:  # rate limited or GitHub trouble: try again in a few minutes
+                    _compare_cache[commit] = (time.time() + 300, None)
+                    return None
+    except (aiohttp.ClientError, TimeoutError, ValueError, KeyError):
+        return None
+    _compare_cache[commit] = (time.time() + 3600, result)
+    return result
+
+
+async def update(request):
+    return web.json_response({"update": await update_status(request.query.get("version"))})
+
+
 async def devices(request):
     """This machine plus every machine in config.toml, checked in parallel. ?hardware=1 adds
     OS, CPU, memory, disk and GPU facts."""
@@ -59,7 +97,11 @@ async def devices(request):
     remote = [probe(d, hardware) for d in config.devices()]
     mine, *others = await asyncio.gather(local, *remote)
     here = {"name": HOST, "ssh": None, "local": True, "online": True, "info": mine}
-    return web.json_response({"devices": [here, *others], "checked_at": int(time.time())})
+    found = [here, *others]
+    statuses = await asyncio.gather(*(update_status(d.get("info", {}).get("fleetd_version")) for d in found))
+    for d, status in zip(found, statuses):
+        d["update"] = status
+    return web.json_response({"devices": found, "checked_at": int(time.time())})
 
 
 def spawn_shell():
@@ -156,6 +198,7 @@ def main():
     app.router.add_get("/health", health)
     app.router.add_get("/terminal", terminal)
     app.router.add_get("/devices", devices)
+    app.router.add_get("/update", update)
 
     async def serve():
         runner = web.AppRunner(app)

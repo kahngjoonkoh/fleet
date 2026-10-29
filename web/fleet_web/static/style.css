@@ -115,6 +115,14 @@ meter::-webkit-meter-suboptimum-value { background: var(--warn); border-radius: 
 meter::-webkit-meter-even-less-good-value { background: var(--danger); border-radius: 4px; }
 meter::-moz-meter-bar { border-radius: 4px; }
 code { font-family: ui-monospace, monospace; font-size: 0.92em; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warn);
+  margin-left: 5px; vertical-align: super; }
+.update { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 8px;
+  background: var(--notice-bg); border-left: 3px solid var(--warn); }
+.update p { margin: 0; }
+.update strong { color: var(--warn); }
+.update pre { margin: 0; padding: 8px 10px; background: var(--bg); border-radius: 6px; overflow-x: auto;
+  font-size: 13px; user-select: all; }
 .howto { display: flex; flex-direction: column; gap: 8px; }
 .howto p { margin: 0; }
 .howto pre { margin: 0 0 6px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;

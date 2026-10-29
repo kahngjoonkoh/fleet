@@ -14,6 +14,7 @@
 
 import argparse
 import getpass
+import importlib.metadata
 import os
 import shutil
 import socket
@@ -22,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import SOCKET, STATE_DIR, config
+from . import SOCKET, SOURCE_FILE, STATE_DIR, VERSION_FILE, config
 
 UNIT_PATH = Path.home() / ".config/systemd/user/fleetd.service"
 UNIT = """\
@@ -87,9 +88,21 @@ def linger_on():
     return out.stdout.strip() == "yes"
 
 
-def install_fleetd():
+def build_version(repo):
+    """e.g. 0.1.0+bcb752b, or 0.1.0+bcb752b.dirty when installed from a checkout with local edits."""
+    version = importlib.metadata.version("fleet")
+    if repo:
+        git = lambda *a: run("git", "-C", str(repo), *a, check=False, capture=True).stdout.strip()
+        if commit := git("rev-parse", "--short", "HEAD"):
+            version += f"+{commit}" + (".dirty" if git("status", "--porcelain") else "")
+    return version
+
+
+def install_fleetd(version, repo):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(STATE_DIR, 0o750)
+    VERSION_FILE.write_text(version + "\n")
+    SOURCE_FILE.write_text(f"{repo.resolve()}\n" if repo else "")
     UNIT_PATH.parent.mkdir(parents=True, exist_ok=True)
     UNIT_PATH.write_text(UNIT.format(exe=fleetd_exe()))
     systemctl("daemon-reload")
@@ -97,7 +110,7 @@ def install_fleetd():
     systemctl("restart", "fleetd")
     for _ in range(25):
         if fleetd_healthy():
-            say(f"fleetd is running ({SOCKET})")
+            say(f"fleetd {version} is running ({SOCKET})")
             break
         time.sleep(0.2)
     else:
@@ -124,7 +137,7 @@ def read_env(path):
     return env
 
 
-def install_hub(repo, origin, show_hardware):
+def install_hub(repo, origin, show_hardware, version):
     if not shutil.which("docker"):
         fail("the hub runs fleet-web in Docker, and docker isn't installed")
     env_path = repo / ".env"
@@ -134,6 +147,7 @@ def install_hub(repo, origin, show_hardware):
         fail("first hub install needs the public address: --origin https://fleet.example.com")
     env["FLEET_STATE_DIR"] = str(STATE_DIR)
     env["FLEET_GID"] = str(os.getgid())
+    env["FLEET_VERSION"] = version
     env.setdefault("FLEET_NETWORK", "public_proxy")
     if show_hardware is not None:
         env["FLEET_SHOW_HARDWARE"] = "1" if show_hardware else "0"
@@ -149,9 +163,11 @@ def install_hub(repo, origin, show_hardware):
 
 
 def cmd_install(args):
-    install_fleetd()
+    repo = find_repo(args.repo) if args.hub else (Path(args.repo) if args.repo else None)
+    version = build_version(repo)
+    install_fleetd(version, repo)
     if args.hub:
-        install_hub(find_repo(args.repo), args.origin, args.show_hardware)
+        install_hub(repo, args.origin, args.show_hardware, version)
 
 
 def cmd_status(args):
@@ -213,6 +229,8 @@ def cmd_devices(args):
 
 def main():
     p = argparse.ArgumentParser(prog="fleet", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    installed = VERSION_FILE.read_text().strip() if VERSION_FILE.exists() else importlib.metadata.version("fleet")
+    p.add_argument("--version", action="version", version=f"fleet {installed}")
     sub = p.add_subparsers(dest="cmd", required=True)
     i = sub.add_parser("install", help="install or update fleetd (and fleet-web with --hub)")
     i.add_argument("--hub", action="store_true", help="also run fleet-web on this machine")

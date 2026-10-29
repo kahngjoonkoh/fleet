@@ -11,18 +11,31 @@
 {% for d in devices %}
 {% set i = d.info %}
 <section class="card device">
+  {% set connected = d.online and i.fleetd == "active" %}
   <header class="device-head">
     <h2>{{ d.name }}</h2>
     {% if d.local %}<span class="pill">Hub</span>{% endif %}
-    <span class="status {{ 'on' if d.online else 'off' }}">{{ "Online" if d.online else "Offline" }}</span>
+    <span class="status {{ 'on' if connected else 'off' }}">{{ "Connected" if connected else "Not connected" }}</span>
   </header>
   {% if not d.online %}
   <p class="muted small">ssh {{ d.ssh }}: {{ d.error }}</p>
   {% else %}
-  {% set h = i.hardware %}
-  {% if hardware and h %}<p class="muted small">{{ h.os }} · {{ h.arch }} · up {{ h.uptime | duration }}</p>{% endif %}
+  {% set upd = d["update"] %}{# d.update would be dict.update() #}
+  {% if upd and upd.available %}
+  <div class="update" role="status">
+    <p><strong>Update available</strong> · {{ upd.behind_by }} new commit{{ "" if upd.behind_by == 1 else "s" }}</p>
+    <p class="muted small">Run on {{ d.name }}:</p>
+    <pre><code>{{ d.update_cmd }}</code></pre>
+  </div>
+  {% endif %}
   <dl class="stats">
+    {% if d.local %}<dt>fleet-web</dt><dd>{{ web_version }}</dd>{% endif %}
+    <dt>fleetd</dt>
+    <dd>{{ i.fleetd_version or "unknown version" }}{% if i.fleetd != "active" %} <span class="tag off">{{ i.fleetd | capitalize }}</span>{% endif %}</dd>
+    {% set h = i.hardware %}
     {% if hardware and h %}
+    <dt>System</dt>
+    <dd>{{ h.os }} · {{ h.arch }} · up {{ h.uptime | duration }}</dd>
     <dt>CPU</dt>
     <dd><span class="sub">{{ h.cpu_model }} · {{ h.cpus }} threads</span>
       <span>Load {{ h.load | join(" / ") }}</span>
@@ -42,11 +55,6 @@
       <meter min="0" max="{{ g.mem_total }}" low="{{ g.mem_total * 0.75 }}" high="{{ g.mem_total * 0.9 }}" optimum="0" value="{{ g.mem_used }}"></meter></dd>
     {% endfor %}
     {% endif %}
-    <dt>Claude</dt>
-    <dd>{{ i.claude_processes }} running · {{ i.tmux_sessions | length }} tmux session{{ "" if i.tmux_sessions | length == 1 else "s" }}
-      {% if i.tmux_sessions %}<span class="sub">{{ i.tmux_sessions | join(", ") }}</span>{% endif %}</dd>
-    <dt>fleetd</dt>
-    <dd>{% if i.fleetd == "active" %}<span class="tag on">Running</span>{% else %}<span class="tag off">{{ i.fleetd | capitalize }}</span>{% endif %}</dd>
   </dl>
   {% endif %}
 </section>
