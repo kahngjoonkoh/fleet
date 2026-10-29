@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Settings</h1>
+<nav class="subtabs">
+  <a href="/settings/account"{% if section == "account" %} aria-current="page"{% endif %}>Account</a>
+  {% if user.is_admin %}<a href="/settings/users"{% if section == "users" %} aria-current="page"{% endif %}>Users</a>{% endif %}
+</nav>
+{% block section %}{% endblock %}
+{% endblock %}

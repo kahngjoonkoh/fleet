@@ -1,0 +1,29 @@
+# fleet-web: the Fleet dashboard, run on the hub by `./install.sh --hub`, which writes .env.
+# Your tunnel reaches it at http://fleet-web:8080 over $FLEET_NETWORK; no host port is published.
+name: fleet
+services:
+  fleet-web:
+    build: ./web
+    image: fleet-web:local
+    container_name: fleet-web
+    restart: unless-stopped
+    environment:
+      FLEET_PUBLIC_ORIGIN: ${FLEET_PUBLIC_ORIGIN:?run ./install.sh --hub --origin https://...}
+      FLEET_SHOW_HARDWARE: ${FLEET_SHOW_HARDWARE:-0}
+    volumes:
+      - fleet-web-data:/data
+      # fleetd's socket on this host; fleet-web joins the owner's group to use it.
+      - ${FLEET_STATE_DIR:?run ./install.sh --hub}:/run/fleet:ro
+    group_add: ["${FLEET_GID:?run ./install.sh --hub}"]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    networks: [proxy]
+volumes:
+  fleet-web-data:
+networks:
+  proxy:
+    external: true
+    name: ${FLEET_NETWORK:-public_proxy}

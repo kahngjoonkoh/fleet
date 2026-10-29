@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Fleet{% endblock %}
+{% block main_class %}center{% endblock %}
+{% block content %}
+<form class="card narrow" method="post" action="/login">
+  <h1>Fleet</h1>
+  <p class="muted">Sign in to manage your Claude instances.</p>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <label>Email<input type="email" name="email" value="{{ email or '' }}" autocomplete="username" required autofocus></label>
+  <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+  <button class="primary">Sign in</button>
+  <p class="muted small">Accounts are created by an admin. There is no sign-up.</p>
+</form>
+{% endblock %}

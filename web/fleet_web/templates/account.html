@@ -1,0 +1,38 @@
+{% extends "base.html" if user.must_change else "settings.html" %}
+{% block title %}{% if user.must_change %}Set your password{% else %}Account{% endif %} · Fleet{% endblock %}
+{% block main_class %}{% if user.must_change %}center{% else %}page{% endif %}{% endblock %}
+{% block content %}{% if user.must_change %}<form class="card narrow" method="post" action="/settings/account">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h1>{% if user.must_change %}Set your password{% else %}Change password{% endif %}</h1>
+  {% if user.must_change %}<p class="muted">You signed in with a one-time password. Choose your own to continue.</p>{% endif %}
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
+  <label>New password<input type="password" name="new" autocomplete="new-password" minlength="12" required></label>
+  <label>Repeat new password<input type="password" name="repeat" autocomplete="new-password" minlength="12" required></label>
+  <p class="muted small">At least 12 characters. Other signed-in devices are signed out.</p>
+  <button class="primary">Save password</button>
+  {% if user.must_change %}
+  <button class="link" form="signout">Sign out</button>
+  {% endif %}
+</form>
+<form id="signout" method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"></form>
+{% else %}{{ super() }}{% endif %}{% endblock %}
+{% block section %}
+<section class="card account">
+  <p class="muted">Signed in as <strong>{{ user.email | email }}</strong>{% if user.is_admin %} · Admin{% endif %}</p>
+</section>
+<form class="card narrow" method="post" action="/settings/account">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h2>Change password</h2>
+  {% if user.must_change %}<p class="muted">You signed in with a one-time password. Choose your own to continue.</p>{% endif %}
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
+  <label>New password<input type="password" name="new" autocomplete="new-password" minlength="12" required></label>
+  <label>Repeat new password<input type="password" name="repeat" autocomplete="new-password" minlength="12" required></label>
+  <p class="muted small">At least 12 characters. Other signed-in devices are signed out.</p>
+  <button class="primary">Save password</button>
+  {% if user.must_change %}
+  <button class="link" form="signout">Sign out</button>
+  {% endif %}
+</form>
+{% endblock %}

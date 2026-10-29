@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Terminal · Fleet{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<script src="/static/vendor/xterm.js" defer></script>
+<script src="/static/vendor/addon-fit.js" defer></script>
+<script src="/static/term.js" defer></script>
+{% endblock %}
+{% block body_class %}app{% endblock %}
+{% block main_class %}term-main{% endblock %}
+{% block content %}
+<div id="term" class="term"></div>
+<div id="term-status" class="term-status" hidden>
+  <span></span> <button class="link" id="reconnect">Reconnect</button>
+</div>
+<div class="keys" id="keys" aria-label="Extra keys">
+  <button data-k="esc">ESC</button><button data-k="tab">TAB</button>
+  <button data-mod="ctrl">CTRL</button><button data-mod="alt">ALT</button>
+  <button data-k="left" aria-label="Left">←</button><button data-k="down" aria-label="Down">↓</button>
+  <button data-k="up" aria-label="Up">↑</button><button data-k="right" aria-label="Right">→</button>
+  <button data-font="1" aria-label="Larger text">A+</button>
+  <button data-s="/">/</button><button data-s="-">-</button><button data-s="|">|</button><button data-s="~">~</button>
+  <button data-k="home">HOME</button><button data-k="end">END</button>
+  <button data-k="pgup">PGUP</button><button data-k="pgdn">PGDN</button>
+  <button data-font="-1" aria-label="Smaller text">A−</button>
+</div>
+{% endblock %}

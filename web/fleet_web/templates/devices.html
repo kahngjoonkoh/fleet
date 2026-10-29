@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Devices · Fleet{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="30">{% endblock %}
+{% block content %}
+<div class="title-row">
+  <h1>Devices</h1>
+  <p class="muted small">Updates every 30 s · <a href="/devices">Refresh</a></p>
+</div>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<div class="device-grid">
+{% for d in devices %}
+{% set i = d.info %}
+<section class="card device">
+  <header class="device-head">
+    <h2>{{ d.name }}</h2>
+    {% if d.local %}<span class="pill">Hub</span>{% endif %}
+    <span class="status {{ 'on' if d.online else 'off' }}">{{ "Online" if d.online else "Offline" }}</span>
+  </header>
+  {% if not d.online %}
+  <p class="muted small">ssh {{ d.ssh }}: {{ d.error }}</p>
+  {% else %}
+  {% set h = i.hardware %}
+  {% if hardware and h %}<p class="muted small">{{ h.os }} · {{ h.arch }} · up {{ h.uptime | duration }}</p>{% endif %}
+  <dl class="stats">
+    {% if hardware and h %}
+    <dt>CPU</dt>
+    <dd><span class="sub">{{ h.cpu_model }} · {{ h.cpus }} threads</span>
+      <span>Load {{ h.load | join(" / ") }}</span>
+      <meter min="0" max="{{ h.cpus }}" low="{{ h.cpus * 0.7 }}" high="{{ h.cpus * 0.9 }}" optimum="0" value="{{ [h.load[0], h.cpus] | min }}"></meter></dd>
+    <dt>Memory</dt>
+    <dd><span>{{ h.memory.used | size }} of {{ h.memory.total | size }}</span>
+      <meter min="0" max="{{ h.memory.total }}" low="{{ h.memory.total * 0.75 }}" high="{{ h.memory.total * 0.9 }}" optimum="0" value="{{ h.memory.used }}"></meter></dd>
+    {% for disk in h.disks %}
+    <dt>Disk {{ disk.path }}</dt>
+    <dd><span>{{ disk.used | size }} of {{ disk.total | size }}</span>
+      <meter min="0" max="{{ disk.total }}" low="{{ disk.total * 0.8 }}" high="{{ disk.total * 0.92 }}" optimum="0" value="{{ disk.used }}"></meter></dd>
+    {% endfor %}
+    {% for g in h.gpus %}
+    <dt>GPU {{ loop.index0 }}</dt>
+    <dd><span class="sub">{{ g.name }}{% if g.temp is not none %} · {{ g.temp }}°C{% endif %}{% if g.util is not none %} · {{ g.util }}% busy{% endif %}</span>
+      <span>{{ g.mem_used | size }} of {{ g.mem_total | size }}</span>
+      <meter min="0" max="{{ g.mem_total }}" low="{{ g.mem_total * 0.75 }}" high="{{ g.mem_total * 0.9 }}" optimum="0" value="{{ g.mem_used }}"></meter></dd>
+    {% endfor %}
+    {% endif %}
+    <dt>Claude</dt>
+    <dd>{{ i.claude_processes }} running · {{ i.tmux_sessions | length }} tmux session{{ "" if i.tmux_sessions | length == 1 else "s" }}
+      {% if i.tmux_sessions %}<span class="sub">{{ i.tmux_sessions | join(", ") }}</span>{% endif %}</dd>
+    <dt>fleetd</dt>
+    <dd>{% if i.fleetd == "active" %}<span class="tag on">Running</span>{% else %}<span class="tag off">{{ i.fleetd | capitalize }}</span>{% endif %}</dd>
+  </dl>
+  {% endif %}
+</section>
+{% endfor %}
+</div>
+{% if devices | length <= 1 and not error %}
+<section class="card howto">
+  <h2>Add a machine</h2>
+  <p class="muted small">1. On the machine, install fleetd:</p>
+  <pre><code>{{ install_cmd }}</code></pre>
+  <p class="muted small">2. On the hub, add it by its ssh name:</p>
+  <pre><code>fleet devices add NAME</code></pre>
+</section>
+{% endif %}
+{% endblock %}
