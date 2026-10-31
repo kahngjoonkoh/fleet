@@ -520,7 +520,8 @@ def read_rules():
     out = ["# Rules for every agent", ""]
     for i in rows:
         n = note(i)
-        out.append(f"- {n['title']}" + (f": {re.sub(r'\s+', ' ', n['body']).strip()}" if n["body"].strip() else "") + f" ({i})")
+        body = re.sub(r"\s+", " ", n["body"]).strip()  # outside the f-string: Python 3.11 refuses a backslash in one
+        out.append(f"- {n['title']}" + (f": {body}" if body else "") + f" ({i})")
     return "\n".join(out) + "\n"
 
 
