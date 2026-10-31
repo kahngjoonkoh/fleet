@@ -107,6 +107,9 @@ def install_fleetd(version, repo):
     UNIT_PATH.write_text(UNIT.format(exe=fleetd_exe()))
     systemctl("daemon-reload")
     systemctl("enable", "--quiet", "fleetd")
+    # A fleetd that kept crashing (say, before this update fixed it) has hit systemd's start limit,
+    # which would refuse this restart too.
+    systemctl("reset-failed", "fleetd", check=False, capture=True)
     systemctl("restart", "fleetd")
     for _ in range(25):
         if fleetd_healthy():
