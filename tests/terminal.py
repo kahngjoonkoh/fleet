@@ -1,3 +1,6 @@
+# Fleet-web serves pages from a few-seconds-old copy of fleetd's state; the tests change state
+# behind its back (straight through fleetd), so they ask for fresh pages, as a hard reload does.
+FRESH = {"Cache-Control": "no-cache"}
 import os, asyncio, re, sys, aiohttp, sqlite3
 from fleet_web import store
 O = os.environ["FLEET_PUBLIC_ORIGIN"]; B = "http://127.0.0.1:8080"
@@ -9,7 +12,7 @@ pw = store.create_user(db, EMAIL, is_admin=True)
 db.execute("UPDATE users SET must_change = 0 WHERE email = ?", (EMAIL,))
 def ok(name, cond): print(("PASS " if cond else "FAIL ") + name)
 async def main():
-    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as s:
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar(), headers=FRESH) as s:
         r = await s.post(B + "/login", data={"email": EMAIL, "password": pw}, headers={"Origin": O}, allow_redirects=False)
         tok = re.search(r"__Host-fleet_session=([^;]+)", r.headers["Set-Cookie"]).group(1)
         H = {"Cookie": f"__Host-fleet_session={tok}"}

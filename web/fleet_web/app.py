@@ -2,6 +2,8 @@
 there is no sign-up page, and only an admin can create accounts."""
 
 import asyncio
+import contextvars
+import copy
 import hashlib
 import json
 import os
@@ -94,6 +96,7 @@ class Throttle:
 
 def render(request, name, status=200, **ctx):
     user = request.get("user")
+    _last_view[0] = time.monotonic()  # keeps warm_cache going
     html = templates.get_template(name).render(user=user, csrf=user["csrf"] if user else "",
                                                updates=request.app.get("update_count", 0), **ctx)
     return web.Response(text=html, content_type="text/html", status=status)
@@ -110,6 +113,7 @@ def redirect(path):
 @web.middleware
 async def security(request, handler):
     db = request.app["db"]
+    FRESH.set("no-cache" in request.headers.get("Cache-Control", ""))  # a hard reload skips fleet-web's copies
     request["user"] = store.session_user(db, request.cookies.get(COOKIE))
     if request.method == "POST" or is_websocket(request):
         origin = request.headers.get("Origin") or request.headers.get("Referer", "")
@@ -165,9 +169,12 @@ def back(request, default="/"):
     return default
 
 
-SPECULATION_RULES = json.dumps({"prefetch": [{"where": {"and": [
-    {"href_matches": "/*"}, {"not": {"href_matches": "/terminal*"}}, {"not": {"href_matches": "/logout"}},
-    {"not": {"href_matches": "/static/*"}}]}, "eagerness": "moderate"}]})
+# Links are fetched ahead when the pointer rests on them; the tabs (Agents, Projects, Devices) right
+# away, since they're where a tap goes next, so switching tabs shows a page that's already here.
+SPECULATION_RULES = json.dumps({"prefetch": [
+    {"where": {"and": [{"href_matches": "/*"}, {"not": {"href_matches": "/terminal*"}}, {"not": {"href_matches": "/logout"}},
+                       {"not": {"href_matches": "/static/*"}}]}, "eagerness": "moderate"},
+    {"where": {"and": [{"selector_matches": ".bar nav a"}, {"not": {"href_matches": "/terminal*"}}]}, "eagerness": "eager"}]})
 
 
 async def speculation_rules(request):
@@ -305,10 +312,9 @@ async def home(request, status=200, error=None):
         devices = (await fleetd_get("/agents"))["devices"]
     except (aiohttp.ClientError, OSError, TimeoutError, KeyError):
         devices, error = [], error or "fleetd isn't answering on this host."
-    agents = [a | {"device": d["name"]} for d in devices for a in d.get("agents", [])]
-    others = [s | {"device": d["name"]} for d in devices for s in d.get("tmux", [])]
+    agents = by_last_active([a | {"device": d["name"]} for d in devices for a in d.get("agents", [])])
     unreachable = [d for d in devices if "error" in d]
-    return render(request, "home.html", status=status, tab="agents", agents=agents, others=others,
+    return render(request, "home.html", status=status, tab="agents", agents=agents,
                   unreachable=unreachable, error=error, now=int(time.time()), sleep_after=sleep_after(request.app["db"]))
 
 
@@ -430,9 +436,20 @@ def note_url(note_id):
     return f"/notes/{note_id}"
 
 
+def last_active(a):
+    """When the agent last did something; older fleetd only reports it on the pane of a running agent."""
+    return a.get("last_active") or (a.get("pane") or {}).get("last_active")
+
+
+def by_last_active(agents):
+    """Pinned agents first, then the rest; each group most recently active first, and agents that
+    never did anything last, by name."""
+    return sorted(agents, key=lambda a: (not a.get("pinned"), -(last_active(a) or 0), a["name"]))
+
+
 async def all_agents():
     devices = (await fleetd_get("/agents"))["devices"]
-    return [a | {"device": d["name"]} for d in devices for a in d.get("agents", [])]
+    return by_last_active([a | {"device": d["name"]} for d in devices for a in d.get("agents", [])])
 
 
 def fleetd_down():
@@ -572,10 +589,14 @@ async def project_action(request):
     name, action = request.match_info["name"], request.match_info["action"]
     if not PROJECT_NAME.match(name):
         raise web.HTTPNotFound()
-    db, notice = request.app["db"], None
+    db, notice, detail = request.app["db"], None, name
     try:
         if action == "delete":
             result = await fleetd_post("/projects/delete", {"name": name})
+        elif action == "rename":
+            new = (await request.post()).get("new", "").strip()
+            result = await fleetd_post("/projects/rename", {"name": name, "new": new})
+            detail = f"{name} -> {new}"
         elif action == "instructions":
             result = await fleetd_post("/projects/instructions", {"name": name})
             if "error" not in result:
@@ -593,9 +614,11 @@ async def project_action(request):
         result = {"error": "fleetd isn't answering on this host."}
     if "error" in result:
         return await project_page(request, 400, error=result["error"])
-    store.audit(db, request["user"]["email"], "project-" + action, name, client_ip(request))
+    store.audit(db, request["user"]["email"], "project-" + action, detail, client_ip(request))
     if action == "delete":
         redirect("/projects")
+    if action == "rename":
+        redirect(f"/projects/{new}")
     return await project_page(request, notice=notice)
 
 
@@ -746,18 +769,68 @@ async def user_action(request):
     return users_page(request, issued=issued)
 
 
-async def fleetd_get(path, **params):
+# Pages render from a recent copy of what fleetd says, kept warm in the background (warm_cache) while
+# someone is using Fleet, so a page doesn't wait on every machine's agents (or devices, over ssh).
+# Anything posted to fleetd drops the copies, so the page after an action is always fresh.
+CACHE_TTL = {"/agents": 8, "/projects": 8, "/brain": 8, "/devices": 45, "/update": 600}  # seconds
+_cache, _inflight = {}, {}
+_last_view = [-1e9]  # when a page was last rendered
+FRESH = contextvars.ContextVar("fresh", default=False)  # this request asked for no cached copies
+
+
+async def fleetd_get(path, fresh=False, **params):
+    ttl = CACHE_TTL.get(path)
+    if not ttl:
+        return await _fleetd_get(path, params)
+    key = (path, tuple(sorted(params.items())))
+    hit = _cache.get(key)
+    if hit and not (fresh or FRESH.get()) and time.monotonic() - hit[0] < ttl:
+        return copy.deepcopy(hit[1])  # pages add to what they're given
+    if key not in _inflight:  # one fetch at a time per path; everyone waiting shares it
+        _inflight[key] = asyncio.ensure_future(_refresh(key, path, params))
+    return copy.deepcopy(await asyncio.shield(_inflight[key]))
+
+
+async def _refresh(key, path, params):
+    try:
+        value = await _fleetd_get(path, params)
+        _cache[key] = (time.monotonic(), value)
+        return value
+    finally:
+        _inflight.pop(key, None)
+
+
+async def _fleetd_get(path, params):
     async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(FLEETD_SOCK),
                                      timeout=aiohttp.ClientTimeout(total=25)) as session:
         async with session.get("http://fleetd" + path, params=params) as r:
             return await r.json()
 
 
+async def warm_cache(app):
+    """While someone has looked at a page in the last few minutes, refreshes the copies before they
+    go stale, so pages and their live updates never wait on fleetd."""
+    while True:
+        await asyncio.sleep(3)
+        if time.monotonic() - _last_view[0] > 300:
+            continue
+        for (path, params), (at, _) in list(_cache.items()):
+            if time.monotonic() - at > CACHE_TTL[path] - 4:
+                try:
+                    await fleetd_get(path, fresh=True, **dict(params))
+                except (aiohttp.ClientError, OSError, TimeoutError, ValueError):
+                    pass
+
+
 async def fleetd_post(path, body, timeout=60):
-    async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(FLEETD_SOCK),
-                                     timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-        async with session.post("http://fleetd" + path, json=body) as r:
-            return await r.json()
+    _cache.clear()
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(FLEETD_SOCK),
+                                         timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+            async with session.post("http://fleetd" + path, json=body) as r:
+                return await r.json()
+    finally:
+        _cache.clear()  # and again: a page fetched while the action ran may have cached the old state
 
 
 def update_command(source, hub):
@@ -890,7 +963,8 @@ def make_app():
     app["digesting"], app["digested"], app["last_digest"] = set(), {}, {}
 
     async def background(app):
-        tasks = [asyncio.create_task(watch_updates(app)), asyncio.create_task(watch_idle(app))]
+        tasks = [asyncio.create_task(watch_updates(app)), asyncio.create_task(watch_idle(app)),
+                 asyncio.create_task(warm_cache(app))]
         yield
         for task in tasks:
             task.cancel()
@@ -902,7 +976,7 @@ def make_app():
     app.router.add_get("/", home)
     app.router.add_get("/agents/new", new_agent_page)
     app.router.add_post("/agents", create_agent)
-    app.router.add_post(r"/agents/{device}/{name}/{action:start|stop|remove|pin|unpin}", agent_action)
+    app.router.add_post(r"/agents/{device}/{name}/{action:start|stop|remove|pin|unpin|wake}", agent_action)
     app.router.add_get("/settings", moved("/settings/account"))
     app.router.add_get("/account/password", moved("/settings/account"))
     app.router.add_get("/admin/users", moved("/settings/users"))
@@ -917,7 +991,7 @@ def make_app():
     app.router.add_get("/projects/new", new_project_page)
     app.router.add_post("/projects", create_project)
     app.router.add_get("/projects/{name}", project_page)
-    app.router.add_post("/projects/{name}/{action:digest|instructions|delete}", project_action)
+    app.router.add_post("/projects/{name}/{action:digest|instructions|delete|rename}", project_action)
     app.router.add_get(r"/notes/{kind}/{slug}", note_page)
     app.router.add_post(r"/notes/{kind}/{slug}/{action:edit|delete}", note_action)
     app.router.add_post("/rules", add_rule)

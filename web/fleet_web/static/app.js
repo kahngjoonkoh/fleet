@@ -44,7 +44,8 @@ const live = document.querySelectorAll("[data-live]");
 let refreshing = false;
 
 function busy(region) {
-  return region.contains(document.activeElement) && document.activeElement !== document.body
+  const el = document.activeElement;
+  return region.contains(el) && el !== document.body && !el.matches(".chev")
     || region.querySelector("details[open], [aria-busy=true]");
 }
 
@@ -52,7 +53,49 @@ function swap(html, force = false) {
   const fresh = new DOMParser().parseFromString(html, "text/html");
   for (const region of document.querySelectorAll("[data-live]")) {
     const next = fresh.querySelector(`[data-live="${region.dataset.live}"]`);
-    if (next && next.innerHTML !== region.innerHTML && (force || !busy(region))) region.innerHTML = next.innerHTML;
+    if (next && next.innerHTML !== region.innerHTML && (force || !busy(region))) glide(region, () => { region.innerHTML = next.innerHTML; });
+  }
+}
+
+// Agent cards show one row; a click on it (not on its pin or a link) opens the details. Which cards
+// are open survives the live updates, which redraw the cards.
+const opened = new Set();
+function setOpen(card, open) {
+  card.classList.toggle("open", open);
+  card.querySelector(".chev")?.setAttribute("aria-expanded", String(open));
+  if (open) opened.add(card.dataset.key); else opened.delete(card.dataset.key);
+}
+document.addEventListener("click", (e) => {
+  const row = e.target.closest("[data-toggle]");
+  if (!row || (e.target.closest("a, button, form, input") && !e.target.closest(".chev"))) return;
+  const card = row.closest("[data-key]");
+  setOpen(card, !card.classList.contains("open"));
+});
+function reopen(region) {
+  for (const card of region.querySelectorAll("[data-key]")) if (opened.has(card.dataset.key)) setOpen(card, true);
+}
+
+// Cards with a data-key (agents, sorted by last activity) glide from where they were to their new
+// place instead of jumping when an update reorders them: measure, swap, then animate the difference.
+const still = matchMedia("(prefers-reduced-motion: reduce)");
+function glide(region, change) {
+  const before = new Map();
+  for (const el of region.querySelectorAll("[data-key]")) before.set(el.dataset.key, el.getBoundingClientRect());
+  change();
+  reopen(region);
+  if (still.matches || !before.size) return;
+  for (const el of region.querySelectorAll("[data-key]")) {
+    const was = before.get(el.dataset.key);
+    if (!was) {
+      el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250, easing: "ease-out" });
+      continue;
+    }
+    const now = el.getBoundingClientRect();
+    const dx = was.left - now.left, dy = was.top - now.top;
+    if (dx || dy) {
+      el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }],
+                 { duration: 450, easing: "cubic-bezier(.2, .8, .2, 1)" });
+    }
   }
 }
 
@@ -71,6 +114,8 @@ async function refresh() {
 if (live.length) {
   setInterval(refresh, 10000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+  // A page fetched ahead (speculation rules) may be minutes old when it's shown: catch it up at once.
+  if (performance.getEntriesByType("navigation")[0]?.deliveryType === "navigational-prefetch") refresh();
 }
 
 // Buttons in live parts (Start, Stop, Pin, Remove, ...) act in place: the button shows it's working,

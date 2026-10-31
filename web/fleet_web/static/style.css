@@ -107,6 +107,11 @@ h2 { font-size: 17px; margin: 0; }
 .status { margin-left: auto; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .status.on { color: var(--ok); } .status.off { color: var(--danger); }
+/* Active (working right now): the dot pulses; Connected keeps it still. */
+.status.working::before { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 50%, transparent); }
+  50% { box-shadow: 0 0 0 5px transparent; } }
+@media (prefers-reduced-motion: reduce) { .status.working::before { animation: none; } }
 .stats { display: grid; grid-template-columns: 92px 1fr; gap: 12px 12px; margin: 0; font-size: 14px; }
 .stats dt { color: var(--muted); font-size: 13px; padding-top: 1px; }
 .stats dd { margin: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -282,3 +287,28 @@ button.pin:hover { background: var(--bg); color: var(--ink); }
 .pin.on { color: var(--accent); }
 .pin svg { transform: rotate(35deg); }
 button.pin[aria-busy=true] { opacity: 0.4; }
+/* Agent cards: one row (name, machine, status, last active, pin); a click opens the details. */
+.agent { margin: 0; padding: 12px 16px; }
+.agent-row { display: flex; align-items: center; gap: 10px; cursor: pointer; min-height: 32px; -webkit-tap-highlight-color: transparent; }
+.agent-row h2 { font-size: 16px; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-row .pill { flex: none; }
+.agent-row .status { white-space: nowrap; }
+.agent-row .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.agent-row .pin { margin: -6px 0; }
+.chev { display: grid; place-items: center; width: 28px; height: 28px; margin: -6px -8px -6px -6px; padding: 0; border: 0;
+  border-radius: 8px; background: none; color: var(--muted); flex: none; cursor: pointer; }
+.chev:hover { background: var(--bg); color: var(--ink); }
+.chev svg { transition: transform .2s ease; }
+.agent.open .chev svg { transform: rotate(180deg); }
+.agent-more { display: none; flex-direction: column; gap: 12px; margin-top: 14px; }
+.agent.open .agent-more { display: flex; }
+.agent .actions { border-top: 1px solid var(--line); padding-top: 12px; }
+@media (max-width: 480px) { .agent-row { gap: 8px; } .agent-row .pill { display: none; } }
+/* Project page: rename in place */
+.rename-form { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.rename-form input { flex: 1 1 160px; max-width: 280px; }
+/* Moving between pages fades instead of flashing blank, with the top bar held still (where supported). */
+@view-transition { navigation: auto; }
+.bar { view-transition-name: bar; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 120ms; }
+@media (prefers-reduced-motion: reduce) { @view-transition { navigation: none; } }

@@ -245,7 +245,7 @@ async def instruct_members(name):
 
 
 async def projects_action(request):
-    """POST /projects/{create,delete,instructions} with a JSON body."""
+    """POST /projects/{create,delete,rename,instructions} with a JSON body."""
     action, body = request.match_info["action"], await request.json()
     try:
         if action == "create":
@@ -253,6 +253,10 @@ async def projects_action(request):
             return web.json_response({"ok": True})
         if action == "delete":
             brain.delete(body.get("name", ""))
+            return web.json_response({"ok": True})
+        if action == "rename":  # under the brain's lock, so a brain update doesn't file under the old name meanwhile
+            async with brain.lock():
+                brain.rename(body.get("name", ""), body.get("new", ""))
             return web.json_response({"ok": True})
         if action == "instructions":
             brain.project(body.get("name", ""))
@@ -702,7 +706,7 @@ def main():
     app.router.add_post("/agents/{action}", agents_action)
     app.router.add_get("/projects", projects_list)
     app.router.add_get("/projects/{name}", project_detail)
-    app.router.add_post("/projects/{action:create|delete|instructions}", projects_action)
+    app.router.add_post("/projects/{action:create|delete|rename|instructions}", projects_action)
     app.router.add_get("/brain", brain_overview)
     app.router.add_get("/brain/note", brain_note)
     app.router.add_get("/brain/search", brain_search)

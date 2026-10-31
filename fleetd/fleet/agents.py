@@ -186,25 +186,98 @@ def _boot_time():
         return time.time() - float(f.read().split()[0])
 
 
-def _pane(name, pid):
+def _pane(record, pid):
     """Asks the agent's own tmux server about its pane, with the binary that server runs, so a tmux
     upgrade on disk never leaves a client that can't talk to an older server."""
+    name = record["name"]
     code, out, _ = _run(f"/proc/{pid}/exe", "-S", os.path.join(DIR, name + ".sock"), "display", "-p", "-t", name,
-                        "#{pane_dead}|#{pane_dead_status}|#{window_activity}|#{pane_current_command}|#{session_attached}|#{session_activity}",
+                        "#{pane_dead}|#{pane_dead_status}|#{window_activity}|#{pane_current_command}|#{session_attached}|#{session_activity}|#{pane_pid}",
                         timeout=5)
     parts = out.strip().split("|")
-    if code or len(parts) != 6:
+    if code or len(parts) != 7:
         return None
-    dead, status, output, command, attached, typed = parts
-    times = [int(t) for t in (output, typed) if t.isdigit()]
+    dead, status, output, command, attached, typed, pane_pid = parts
+    # Claude Code redraws its footer every 30 minutes to check for updates, so for it the pane's output
+    # isn't a sign of work; its conversation file is, written on every message and tool call.
+    conversation = _conversation_time(record) if record["type"] == "claude" else None
+    times = [int(t) for t in ((typed,) if conversation else (output, typed)) if t.isdigit()] + [conversation or 0]
+    busy = dead != "1" and pane_pid.isdigit() and _runs_shell(int(pane_pid))
     return {"dead": dead == "1", "exit_code": int(status) if status.lstrip("-").isdigit() else None,
-            # The last output or keypress, whichever is later: what counts as activity for sleeping.
-            "last_active": max(times) if times else None, "command": command,
-            "viewers": int(attached) if attached.isdigit() else 0}
+            # The latest of its work and your keypresses: what counts as activity for sleeping.
+            # A task still running counts as activity now, so the agent shows active and isn't put to sleep.
+            "last_active": int(time.time()) if busy else max(times) or None, "busy": busy,
+            "command": command, "viewers": int(attached) if attached.isdigit() else 0}
+
+
+def _conversation_time(record):
+    """When a Claude Code agent's conversation (or one of its subagents') last changed, or None."""
+    if not record.get("session"):
+        return None
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    sid = glob.escape(record["session"])
+    files = glob.glob(f"{base}/projects/*/{sid}.jsonl") + glob.glob(f"{base}/projects/*/{sid}/subagents/*.jsonl")
+    times = []
+    for f in files:
+        try:
+            times.append(int(os.path.getmtime(f)))
+        except OSError:
+            pass
+    return max(times, default=None)
+
+
+def _last_active(name, pane):
+    """The agent's last activity, kept as the mtime of NAME.active so it's still known while it sleeps."""
+    path = _path(name, ".active")
+    seen = (pane or {}).get("last_active")
+    try:
+        kept = int(os.path.getmtime(path))
+    except OSError:
+        kept = None
+    if seen and seen != kept:
+        try:
+            if kept is None:
+                _write(path, "")
+            os.utime(path, (seen, seen))
+            kept = seen
+        except OSError:
+            pass
+    return seen or kept
+
+
+SHELLS = {"bash", "sh", "dash", "zsh", "fish"}
+
+
+def _runs_shell(pid):
+    """Whether the agent's program has a shell child: a command it's running, which may be a background
+    task that prints nothing to the pane for a long while. Its other children are long-lived helpers
+    (MCP servers and the like), which aren't shells."""
+    for stat in glob.glob("/proc/[0-9]*/stat"):
+        try:
+            with open(stat) as f:
+                text = f.read()
+        except OSError:
+            continue
+        comm, rest = text[text.index("(") + 1:text.rindex(")")], text[text.rindex(")") + 2:].split()
+        if rest[1] == str(pid) and comm in SHELLS:
+            return True
+    return False
 
 
 def _int(s):
     return int(s) if s and s.isdigit() else None
+
+
+def _refresh_script(record):
+    """Keeps NAME.sh in step with how Fleet starts agents now. It's otherwise written only when an agent
+    is created, woken or changed, so a pinned agent that never sleeps would start the old way at boot."""
+    path = _path(record["name"], ".sh")
+    try:
+        with open(path) as f:
+            if f.read() == _script(record):
+                return
+    except OSError:
+        return  # not set up yet
+    _write(path, _script(record), 0o700)
 
 
 def list_agents(_args=None):
@@ -213,10 +286,11 @@ def list_agents(_args=None):
     boot = _boot_time()
     agents = []
     for r in records:
+        _refresh_script(r)
         u = units.get(r["name"], {})
         pid = _int(u.get("MainPID"))
         active = u.get("ActiveState") == "active" and pid
-        pane = _pane(r["name"], pid) if active else None
+        pane = _pane(r, pid) if active else None
         if not active:
             state = ("asleep" if os.path.exists(_path(r["name"], ".asleep"))
                      else "failed" if u.get("ActiveState") == "failed" else "stopped")
@@ -231,7 +305,8 @@ def list_agents(_args=None):
             "folder": _home(r["folder"]), "created": r["created"], "pinned": r.get("pinned", False),
             "remote_control": r.get("remote_control", False), "rc_capable": TYPES.get(r["type"], {}).get("rc", False),
             "lazy": TYPES.get(r["type"], {}).get("lazy", False),
-            "state": state, "pane": pane, "memory": memory if memory and memory < 2**63 else None,
+            "state": state, "pane": pane, "last_active": _last_active(r["name"], pane),
+            "memory": memory if memory and memory < 2**63 else None,
             "started": int(boot + started / 1e6) if active and started else None,
         })
     return {"agents": agents, "tmux": _other_tmux(), "now": int(time.time())}
@@ -313,10 +388,15 @@ def _script(record):
     run = lambda cmd: f"exec {shlex.quote(shell)} -l" if cmd is None else f"exec {shlex.quote(shell)} -l -i -c {shlex.quote(cmd)}"
     folder, marker = shlex.quote(record["folder"]), shlex.quote(os.path.join(DIR, record["name"] + ".started"))
     who = shlex.quote(record.get("fleet_agent") or record["name"])
+    # Remote Control gives up for good if Claude Code starts before the network is up, as at boot, where
+    # agents start seconds before it is. User units can't wait on network-online.target, so wait here (up to 2 min).
+    wait = ("i=0; until getent hosts api.anthropic.com >/dev/null 2>&1 || [ $i -ge 120 ]; do sleep 1; i=$((i+1)); done\n"
+            if record.get("remote_control") and record["type"] == "claude" else "")
     return (f"#!/bin/sh\n# Written by Fleet for agent {record['name']}.\n"
             # Who this agent is, as the hub names it: the brain's /me/$FLEET_AGENT reads its part.
             f"export FLEET_AGENT={who}\n"
             f"cd {folder} || {{ echo \"Fleet: can't open the folder {record['folder']}\"; exit 1; }}\n"
+            f"{wait}"
             f"if [ -e {marker} ]; then {run(record['resume'])}; fi\n"
             f": > {marker}\n{run(record['start'])}\n")
 
@@ -463,7 +543,7 @@ def rename(args):
     record["name"] = new
     if args.get("fleet_agent"):
         record["fleet_agent"] = str(args["fleet_agent"])[:100]
-    for ext in (".started", ".asleep"):
+    for ext in (".started", ".asleep", ".active"):
         if os.path.exists(_path(old, ext)):
             os.replace(_path(old, ext), _path(new, ext))
     _write(_path(new, ".json"), json.dumps(record, indent=2) + "\n")
@@ -492,7 +572,7 @@ def pin(args):
 
 
 def _remove_files(name):
-    for ext in (".json", ".sh", ".started", ".sock", ".asleep"):
+    for ext in (".json", ".sh", ".started", ".sock", ".asleep", ".active"):
         try:
             os.unlink(_path(name, ext))
         except FileNotFoundError:

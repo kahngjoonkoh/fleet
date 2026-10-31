@@ -1,3 +1,6 @@
+# Fleet-web serves pages from a few-seconds-old copy of fleetd's state; the tests change state
+# behind its back (straight through fleetd), so they ask for fresh pages, as a hard reload does.
+FRESH = {"Cache-Control": "no-cache"}
 import os, asyncio, re, aiohttp
 from fleet_web import store
 O = os.environ["FLEET_PUBLIC_ORIGIN"]; B = "http://127.0.0.1:8080"; E = "fleet-mf-test@example.com"
@@ -15,7 +18,7 @@ async def project_of(name):
         for a in d.get("agents", []):
             if a["name"] == name: return a.get("project")
 async def main():
-    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as s:
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar(), headers=FRESH) as s:
         r = await s.post(B + "/login", data={"email": E, "password": pw}, headers={"Origin": O}, allow_redirects=False)
         H = {"Cookie": "__Host-fleet_session=" + re.search(r"__Host-fleet_session=([^;]+)", r.headers["Set-Cookie"]).group(1)}
         r = await s.get(B + "/settings/account", headers=H); csrf = re.search(r'name="csrf" value="([^"]+)"', await r.text()).group(1)
@@ -38,5 +41,14 @@ async def main():
         ok("and back", await project_of("fleet-test-m1") == "fleet-test-m")
         r = await post("/projects/fleet-test-m/instructions", {}); body = await r.text()
         ok("update agents' AGENTS.md: already up to date", r.status == 200 and "already up to date" in body, re.sub(r"\s+", " ", body[body.find("notice"):][:200]))
+        r = await post("/projects/fleet-test-m/rename", {"new": "fleet-test-m-renamed"})
+        ok("rename project", r.status == 303 and r.headers["Location"] == "/projects/fleet-test-m-renamed", r.status)
+        ok("its agents moved with it", await project_of("fleet-test-m1") == "fleet-test-m-renamed" and await project_of("fleet-test-m2") == "fleet-test-m-renamed")
+        r = await s.get(B + "/projects/fleet-test-m-renamed", headers=H); body = await r.text()
+        ok("renamed page lists both agents", r.status == 200 and "fleet-test-m1" in body and "fleet-test-m2" in body)
+        r = await s.get(B + "/projects/fleet-test-m", headers=H)
+        ok("old name is gone", r.status == 404, r.status)
+        r = await post("/projects/fleet-test-m-renamed/rename", {"new": "Bad Name"}); body = await r.text()
+        ok("bad name refused", r.status == 400 and "lowercase" in body, r.status)
 asyncio.run(main())
 db.execute("DELETE FROM users WHERE email = ?", (E,)); db.execute("DELETE FROM audit WHERE actor = ?", (E,))

@@ -81,6 +81,13 @@
     <form method="post" action="/projects/{{ p.name }}/delete" data-confirm="Delete project {{ p.name }}? Notes that concern only it go too; shared ones stay. Its agents keep running, in no project.">
       <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link danger">Delete project</button></form>
   </div>
+  <form method="post" action="/projects/{{ p.name }}/rename" class="rename-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="rename-{{ p.name }}" class="muted small">Rename</label>
+    <input id="rename-{{ p.name }}" name="new" value="{{ p.name }}" required maxlength="48" pattern="[a-z0-9][a-z0-9\-]{0,47}"
+      title="1-48 lowercase letters, digits or dashes" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button>Rename</button>
+  </form>
 </section>
 {% endif %}
 {% endblock %}

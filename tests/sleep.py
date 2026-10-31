@@ -1,3 +1,6 @@
+# Fleet-web serves pages from a few-seconds-old copy of fleetd's state; the tests change state
+# behind its back (straight through fleetd), so they ask for fresh pages, as a hard reload does.
+FRESH = {"Cache-Control": "no-cache"}
 import os, asyncio, json, re, uuid, aiohttp
 from fleet_web import store, app as webapp
 O = os.environ["FLEET_PUBLIC_ORIGIN"]; B = "http://127.0.0.1:8080"
@@ -47,7 +50,7 @@ async def open_agent(s, H, name, text, timeout=25):
 
 async def main():
     others = [a["name"] for d in (await fleetd("/agents"))["devices"] for a in d.get("agents", []) if not a["name"].startswith("fleet-test")]
-    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as s:
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar(), headers=FRESH) as s:
         H, csrf = await login(s, ADMIN)
         post = lambda path, data: s.post(B + path, data={"csrf": csrf, **data}, headers={**H, "Origin": O}, allow_redirects=False)
 
@@ -88,11 +91,18 @@ async def main():
         n = db.execute("SELECT count(*) FROM audit WHERE actor = 'fleet' AND action = 'agent-sleep' AND detail LIKE ?", (f"{REMOTE}/fleet-test-l%",)).fetchone()[0]
         ok("sleep audited", others or n >= 1, n)
         r = await s.get(B + "/", headers=H); body = await r.text()
-        ok("card: Asleep, wakes when opened, Open link", ">Asleep<" in body and "Wakes when opened" in body and "agent=fleet-test-l" in body)
+        ok("card: Sleeping, Wake button, wakes when opened, Open link", ">Sleeping<" in body and f"/agents/{REMOTE}/fleet-test-l/wake" in body
+           and "Wakes when opened" in body and "agent=fleet-test-l" in body)
+        ok("card: last active, no idle minutes", "Last active" in body and ">Idle" not in body)
 
         got, tail = await open_agent(s, H, "fleet-test-l", "trust")
         a = await agent("fleet-test-l")
         ok("opening wakes it and shows Claude", got and a["state"] == "running", (tail, a))
+
+        await fleetd("/agents/sleep", {"device": REMOTE, "name": "fleet-test-l"})
+        await post(f"/agents/{REMOTE}/fleet-test-l/wake", {})
+        a = await agent("fleet-test-l")
+        ok("Wake button wakes it", a["state"] == "running", a)
 
         await fleetd("/agents/sleep", {"device": REMOTE, "name": "fleet-test-l"})
         await post(f"/agents/{REMOTE}/fleet-test-l/pin", {})

@@ -1,3 +1,6 @@
+# Fleet-web serves pages from a few-seconds-old copy of fleetd's state; the tests change state
+# behind its back (straight through fleetd), so they ask for fresh pages, as a hard reload does.
+FRESH = {"Cache-Control": "no-cache"}
 import os, asyncio, json, re, uuid, aiohttp
 from fleet_web import store
 O = os.environ["FLEET_PUBLIC_ORIGIN"]; B = "http://127.0.0.1:8080"
@@ -52,7 +55,7 @@ async def main():
     opts = (await fleetd("/agents/options"))["devices"]
     hub = next(d["name"] for d in opts if d["local"])
     ok("options from every device", {d["name"] for d in opts} >= {hub, REMOTE} and all("error" not in d for d in opts), opts)
-    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as s:
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar(), headers=FRESH) as s:
         H, csrf = await login(s, ADMIN)
         post = lambda path, data: s.post(B + path, data={"csrf": csrf, **data}, headers={**H, "Origin": O}, allow_redirects=False)
         r = await s.get(B + "/", headers=H); body = await r.text()
@@ -103,7 +106,7 @@ async def main():
             r = await post(f"/agents/{device}/fleet-test-a/remove", {})
             ok(f"{device}: removed", r.status == 303 and await agent("fleet-test-a", device) is None)
         r = await s.get(B + "/", headers=H); body = await r.text()
-        ok("other tmux sessions listed", "Other tmux sessions" in body and "4d-simulator" in body)
+        ok("tmux sessions Fleet didn't start aren't listed", "Other tmux sessions" not in body)
 
         H2, csrf2 = await login(s, MEMBER)
         r = await s.get(B + "/", headers=H2); body = await r.text()

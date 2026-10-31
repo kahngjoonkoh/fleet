@@ -24,18 +24,5 @@
   <p class="muted">{% if user.is_admin %}Start one on any connected machine with New agent. It keeps running when you close this page.{% else %}Agents an admin starts show up here.{% endif %}</p>
 </section>
 {% endif %}
-{% if others %}
-<h2 class="section-head">Other tmux sessions</h2>
-<p class="muted small">Started outside Fleet, so Fleet only lists them.</p>
-<div class="table-wrap">
-<table>
-  <tr><th>Session</th><th>Device</th><th>Started</th>{% if user.is_admin %}<th></th>{% endif %}</tr>
-  {% for s in others %}
-  <tr><td>{{ s.name }}</td><td>{{ s.device }}</td><td>{{ s.created | when }}</td>
-    {% if user.is_admin %}<td>{% if s.name is match_tmux %}<a href="/terminal?device={{ s.device | urlencode }}&amp;tmux={{ s.name | urlencode }}">Open</a>{% endif %}</td>{% endif %}</tr>
-  {% endfor %}
-</table>
-</div>
-{% endif %}
 </div>
 {% endblock %}

@@ -130,6 +130,46 @@ def delete(name):
             delete_note(note_id)
 
 
+def rename(old, new):
+    """Renames a project: its notes, its agents and its overview note (overview/OLD becomes
+    overview/NEW, links included) all move to the new name in one transaction."""
+    project(old)
+    if not PROJECT.match(new):
+        raise Problem("Project names are 1-48 lowercase letters, digits or dashes.")
+    if new == old:
+        return project(old)
+    d = db()
+    if d.execute("SELECT 1 FROM projects WHERE name = ?", (new,)).fetchone():
+        raise Problem(f"There's already a project called {new}.")
+    was, now = f"overview/{old}", f"overview/{new}"
+    d.execute("BEGIN")
+    try:
+        d.execute("UPDATE projects SET name = ? WHERE name = ?", (new, old))
+        d.execute("UPDATE note_projects SET project = ? WHERE project = ?", (new, old))
+        d.execute("UPDATE homes SET project = ? WHERE project = ?", (new, old))
+        if not d.execute("SELECT 1 FROM notes WHERE id = ?", (now,)).fetchone():
+            d.execute("UPDATE notes SET id = ?, title = CASE WHEN title = ? THEN ? ELSE title END WHERE id = ?",
+                      (now, old, new, was))
+            d.execute("UPDATE OR IGNORE note_projects SET note = ? WHERE note = ?", (now, was))
+            d.execute("UPDATE OR IGNORE links SET src = ? WHERE src = ?", (now, was))
+            d.execute("UPDATE OR IGNORE links SET dst = ? WHERE dst = ?", (now, was))
+            for table, col in (("note_projects", "note"), ("notes_fts", "id")):
+                d.execute(f"DELETE FROM {table} WHERE {col} = ?", (was,))
+            d.execute("DELETE FROM links WHERE src = ? OR dst = ?", (was, was))
+            row = d.execute("SELECT title, body FROM notes WHERE id = ?", (now,)).fetchone()
+            if row:
+                d.execute("INSERT INTO notes_fts (id, title, body) VALUES (?, ?, ?)", (now, row["title"], row["body"]))
+        d.execute("COMMIT")
+    except BaseException:
+        d.execute("ROLLBACK")
+        raise
+    # The markdown copies list each note's projects, so rewrite this project's.
+    (MD_DIR / "overview" / f"{old}.md").unlink(missing_ok=True)
+    for (note_id,) in d.execute("SELECT note FROM note_projects WHERE project = ?", (new,)).fetchall():
+        export(note_id)
+    return project(new)
+
+
 def instructions_block():
     """What goes in the AGENTS.md of every folder a project's agent works in: that the brain exists,
     and how to read it. It doesn't name a project; each agent's /me says which one it's in."""
