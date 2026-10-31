@@ -3,6 +3,8 @@
 <h1>Settings</h1>
 <nav class="subtabs">
   <a href="/settings/account"{% if section == "account" %} aria-current="page"{% endif %}>Account</a>
+  {% if user.is_admin %}<a href="/settings/agents"{% if section == "agents" %} aria-current="page"{% endif %}>Agents</a>{% endif %}
+  {% if user.is_admin %}<a href="/settings/brain"{% if section == "brain" %} aria-current="page"{% endif %}>Brain</a>{% endif %}
   {% if user.is_admin %}<a href="/settings/users"{% if section == "users" %} aria-current="page"{% endif %}>Users</a>{% endif %}
 </nav>
 {% block section %}{% endblock %}

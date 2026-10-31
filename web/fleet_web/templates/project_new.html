@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}New project · Fleet{% endblock %}
+{% block content %}
+<h1>New project</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/projects" class="card narrow">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Name
+    <input type="text" name="name" value="{{ form.name }}" required maxlength="48" pattern="[a-z0-9][a-z0-9\-]{0,47}"
+      autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="e.g. fleet">
+  </label>
+  <button class="primary">Create project</button>
+</form>
+{% endblock %}

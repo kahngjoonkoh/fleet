@@ -30,19 +30,75 @@ for (const [k, v] of [["autocorrect", "off"], ["autocapitalize", "off"], ["autoc
 
 const encoder = new TextEncoder();
 const statusBox = document.getElementById("term-status");
+const statusText = statusBox.querySelector("span");
+const statusButton = document.getElementById("reconnect");
+const device = new URLSearchParams(location.search).get("device") || "";
+// ?agent= or ?tmux=: this page shows that tmux session rather than a shell of its own.
+const { agent, tmux } = document.getElementById("term").dataset;
+
+// fleetd keeps a shell running for 30 minutes after its connection drops, under this tab's session
+// id, so reconnecting (or reloading the page) resumes it. Each device, and each agent, gets its own id per tab.
+const SESSION_KEY = `fleet.term.session.${device || "hub"}${agent ? ".agent." + agent : tmux ? ".tmux." + tmux : ""}`;
+let sessionId = null;
+try { sessionId = sessionStorage.getItem(SESSION_KEY); } catch {}
+function newSession() {
+  sessionId = crypto.randomUUID();
+  try { sessionStorage.setItem(SESSION_KEY, sessionId); } catch {}
+}
+if (!sessionId) newSession();
+
+const EXITED = 4000, TAKEN_OVER = 4001;
 let ws = null;
+let retries = 0;
+let retryTimer = null;
+
+function showStatus(text, button) {
+  statusText.textContent = text;
+  statusButton.hidden = !button;
+  if (button) statusButton.textContent = button;
+  statusBox.hidden = false;
+}
 
 function connect() {
-  statusBox.hidden = true;
-  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/terminal/ws`);
-  ws.binaryType = "arraybuffer";
-  ws.onopen = () => { sendSize(); term.focus(); };
-  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
-  ws.onclose = () => {
-    statusBox.querySelector("span").textContent = "Disconnected.";
-    statusBox.hidden = false;
+  clearTimeout(retryTimer);
+  if (ws && ws.readyState <= WebSocket.OPEN) return;
+  const params = new URLSearchParams({ session: sessionId });
+  if (device) params.set("device", device);
+  if (agent) params.set("agent", agent);
+  else if (tmux) params.set("tmux", tmux);
+  const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/terminal/ws?${params}`);
+  socket.binaryType = "arraybuffer";
+  let first = true;
+  socket.onopen = () => { retries = 0; statusBox.hidden = true; sendSize(); term.focus(); };
+  socket.onmessage = (e) => {
+    if (first) { term.reset(); first = false; }  // the first message repaints the screen from scratch
+    term.write(new Uint8Array(e.data));
   };
+  socket.onclose = (e) => {
+    if (ws !== socket) return;
+    ws = null;
+    // For a tmux session, ending the connection only detaches; the agent keeps running.
+    if (e.code === EXITED) return agent || tmux ? showStatus("Detached.", "Reattach") : showStatus("Shell exited.", "New shell");
+    if (e.code === TAKEN_OVER) return showStatus("Opened in another tab.", "Use here");
+    scheduleReconnect();
+  };
+  ws = socket;
 }
+
+// Phones pause pages in the background and drop connections when the network changes, so
+// reconnect quietly: quickly at first, then every 10 s, and at once when the page or network returns.
+function scheduleReconnect() {
+  showStatus("Reconnecting…", "Retry now");
+  if (document.hidden || !navigator.onLine) return;
+  retryTimer = setTimeout(connect, Math.min(10000, 500 * 2 ** retries++));
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !ws && statusButton.textContent === "Retry now") connect(); });
+window.addEventListener("online", () => { if (!ws && statusButton.textContent === "Retry now") connect(); });
+
+statusButton.addEventListener("click", () => {
+  if (statusButton.textContent === "New shell" || statusButton.textContent === "Reattach") newSession();
+  connect();
+});
 
 function send(data) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
@@ -50,8 +106,6 @@ function send(data) {
 function sendSize() {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ resize: [term.cols, term.rows] }));
 }
-
-document.getElementById("reconnect").addEventListener("click", () => { term.reset(); connect(); });
 
 // --- sticky modifiers -------------------------------------------------------
 const mods = { ctrl: false, alt: false };
@@ -129,17 +183,53 @@ function setFont(delta) {
   refit();
 }
 
+document.getElementById("term-font").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) setFont(Number(b.dataset.font));
+});
+
+// Two-finger pinch on the terminal resizes the text, as in Termux.
+let pinch = null;
+const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+term.element.addEventListener("touchstart", (e) => {
+  if (e.touches.length === 2) pinch = { start: spread(e.touches), size: term.options.fontSize };
+}, { passive: true });
+term.element.addEventListener("touchmove", (e) => {
+  if (!pinch || e.touches.length !== 2) return;
+  e.preventDefault();
+  const size = Math.round(pinch.size * spread(e.touches) / pinch.start);
+  if (size !== term.options.fontSize) setFont(size - term.options.fontSize);
+}, { passive: false });
+term.element.addEventListener("touchend", (e) => { if (e.touches.length < 2) pinch = null; });
+
+// Holding an arrow or page key repeats it, as in Termux.
+const REPEATS = new Set(["up", "down", "left", "right", "pgup", "pgdn"]);
+let repeat = null;
+function stopRepeat() {
+  clearTimeout(repeat);
+  clearInterval(repeat);
+  repeat = null;
+}
+
 // pointerdown + preventDefault keeps focus in the terminal, so the phone keyboard stays open.
-document.getElementById("keys").addEventListener("pointerdown", (e) => {
+const keys = document.getElementById("keys");
+keys.addEventListener("pointerdown", (e) => {
   const b = e.target.closest("button");
   if (!b) return;
   e.preventDefault();
   if (b.dataset.mod) setMod(b.dataset.mod, !mods[b.dataset.mod]);
-  else if (b.dataset.font) setFont(Number(b.dataset.font));
   else if (b.dataset.s) send(applyMods(b.dataset.s));
   else if (b.dataset.k === "esc" || b.dataset.k === "tab") send(applyMods(keySequence(b.dataset.k)));
-  else send(keySequence(b.dataset.k));
+  else {
+    // Modifiers apply to the first press only; repeats send the plain key.
+    send(keySequence(b.dataset.k));
+    if (REPEATS.has(b.dataset.k)) {
+      stopRepeat();
+      repeat = setTimeout(() => { repeat = setInterval(() => send(keySequence(b.dataset.k)), 60); }, 400);
+    }
+  }
 });
+for (const type of ["pointerup", "pointercancel", "pointerleave"]) keys.addEventListener(type, stopRepeat);
 
 // --- sizing -----------------------------------------------------------------
 // iOS ignores interactive-widget, so follow the visual viewport to stay above the keyboard.

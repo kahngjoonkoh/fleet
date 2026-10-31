@@ -1,4 +1,4 @@
-"""Accounts, login sessions and the audit log, kept in one SQLite file under /data."""
+"""Accounts, login sessions, the audit log and settings, kept in one SQLite file under /data."""
 
 import base64
 import hashlib
@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at INTEGER NOT NULL,
     ip TEXT
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY,
     at INTEGER NOT NULL,
@@ -50,6 +54,16 @@ def connect():
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
     return db
+
+
+def get_setting(db, key, default):
+    row = db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(db, key, value):
+    db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+               (key, str(value)))
 
 
 # scrypt from the standard library: n=2^15 costs about 50 ms and 32 MB per check.

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "macros.html" import graph_view %}
+{% block title %}Projects · Fleet{% endblock %}
+{% block head %}<script src="{{ static('graph.js') }}" defer></script>{% endblock %}
+{% block content %}
+<div class="title-row">
+  <h1>Projects</h1>
+  {% if user.is_admin %}<a class="primary button" href="/projects/new">New project</a>{% endif %}
+</div>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form class="search-bar" action="/search"><input type="search" name="q" placeholder="Search every project's brain" aria-label="Search the brain"></form>
+<section class="card rules">
+  <h2>Rules for every agent</h2>
+  <p class="muted small">Every agent reads these at the start of a task, whatever its project.</p>
+  {% if rules %}
+  <ul class="note-list">{% for id, n in rules.items() %}<li><a href="/notes/{{ id }}">{{ n.title }}</a></li>{% endfor %}</ul>
+  {% else %}<p class="muted small">None yet. Fleet adds one when you tell an agent something that applies everywhere.</p>{% endif %}
+  {% if user.is_admin %}
+  <details class="add-rule"><summary class="link">Add a rule</summary>
+    <form method="post" action="/rules" class="narrow">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Rule<input type="text" name="title" required maxlength="200" placeholder="e.g. Never restart cloudflared without asking"></label>
+      <label>Why, or details <span class="hint">optional</span><textarea name="body" rows="3"></textarea></label>
+      <button class="primary">Add rule</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+{% if projects %}
+<div class="device-grid">
+{% for p in projects %}
+<a class="card device project-card" href="/projects/{{ p.name | urlencode }}">
+  <header class="device-head">
+    <h2>{{ p.name }}</h2>
+    {% if p.running %}<span class="status on">{{ p.running }} running</span>{% endif %}
+  </header>
+  <dl class="stats">
+    <dt>Agents</dt><dd>{{ p.agents }}</dd>
+    <dt>Brain</dt><dd>{{ p.notes }} notes · {{ p.decisions }} decisions{% if p.milestones %} · {{ p.milestones }} milestones{% endif %}</dd>
+    {% if p.todos_open %}<dt>Todos</dt><dd>{{ p.todos_open }} open</dd>{% endif %}
+    <dt>Updated</dt><dd>{{ p.updated or "never" }}</dd>
+  </dl>
+</a>
+{% endfor %}
+</div>
+{% if graph.nodes | length > 1 %}
+<h2 class="section-head">All projects</h2>
+<p class="muted small">Projects joined by the tech, machines, services and notes they share, and the rules for every agent.</p>
+{{ graph_view(graph, "graph-all") }}
+{% endif %}
+{% if loose %}
+<h2 class="section-head">Agents in no project</h2>
+<p class="muted small">Their work still goes into the brain, filed under whichever projects it concerns.
+  {% for a in loose %}<a href="/agents/{{ a.device | urlencode }}/{{ a.name | urlencode }}/edit">{{ a.name }}</a> <span class="muted">on {{ a.device }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+{% endif %}
+{% elif not error %}
+<section class="card empty">
+  <p><strong>No projects yet.</strong></p>
+  <p class="muted">A project is a folder on one of your machines. Its agents' work turns into a brain: decisions,
+    requirements, tech, problems, todos and milestones, linked together, which its agents read before they act.</p>
+</section>
+{% endif %}
+{% endblock %}

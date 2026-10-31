@@ -9,8 +9,18 @@ color:#ecebe6;font:15px/1.5 system-ui,sans-serif;text-align:center;padding:16px"
 <p style="color:#a09f99;margin:0">Can't reach fleet-web. Check your connection, then pull down or reopen to retry.</p></div>`;
 
 self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+// Navigation preload: the browser starts loading the page while this worker starts up, instead of after.
+self.addEventListener("activate", (e) => e.waitUntil(Promise.all([
+  self.clients.claim(),
+  self.registration.navigationPreload ? self.registration.navigationPreload.enable() : null,
+])));
 self.addEventListener("fetch", (e) => {
   if (e.request.mode !== "navigate") return;
-  e.respondWith(fetch(e.request).catch(() => new Response(OFFLINE, { headers: { "Content-Type": "text/html" } })));
+  e.respondWith((async () => {
+    try {
+      return (await e.preloadResponse) || (await fetch(e.request));
+    } catch {
+      return new Response(OFFLINE, { headers: { "Content-Type": "text/html" } });
+    }
+  })());
 });

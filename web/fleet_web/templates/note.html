@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "macros.html" import status_tag %}
+{% block title %}{{ n.title }} · Fleet{% endblock %}
+{% block content %}
+<p class="crumbs small"><a href="/projects">Projects</a> /{% for p in n.projects %} <a href="/projects/{{ p }}">{{ p }}</a>{% if not loop.last %},{% endif %}{% endfor %}</p>
+<h1>{{ n.title }}</h1>
+<p class="muted small note-meta"><span class="kind-dot" data-kind="{{ n.kind }}"></span>{{ n.kind | capitalize }}{{ status_tag(n.status) }}
+  {% if n.scope == "global" %}<span class="pill">Rule for every agent</span>{% elif not n.projects %}<span class="pill">No project</span>{% endif %}
+  {% if n.date %} · {{ n.date }}{% endif %} · updated {{ n.updated }}
+  {% if user.is_admin and not editing %} · <a href="?edit=1">Edit</a>{% endif %}</p>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if editing %}
+<form method="post" action="/notes/{{ note_id }}/edit" class="card narrow wide-form">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Title<input type="text" name="title" value="{{ n.title }}" required maxlength="200"></label>
+  <label>Status <span class="hint">e.g. open, done, active, superseded, fixed, reached; or empty</span>
+    <input type="text" name="status" value="{{ n.status or '' }}" maxlength="40" autocapitalize="off"></label>
+  <fieldset class="field">
+    <legend>Applies to</legend>
+    <div class="chips">
+      <label class="chip"><input type="radio" name="scope" value="project"{% if n.scope != "global" %} checked{% endif %}><span>Its projects</span></label>
+      <label class="chip"><input type="radio" name="scope" value="global"{% if n.scope == "global" %} checked{% endif %}><span>Every agent (a rule)</span></label>
+    </div>
+  </fieldset>
+  <fieldset class="field">
+    <legend>Projects</legend>
+    <div class="chips">
+      {% for p in all_projects %}<label class="chip"><input type="checkbox" name="projects" value="{{ p }}"{% if p in n.projects %} checked{% endif %}><span>{{ p }}</span></label>{% endfor %}
+    </div>
+  </fieldset>
+  <label>Details <span class="hint">markdown; [[kind/slug|title]] links to another note</span>
+    <textarea name="body" rows="12">{{ n.body }}</textarea></label>
+  <div class="actions"><button class="primary">Save</button><a href="/notes/{{ note_id }}">Cancel</a></div>
+</form>
+<form method="post" action="/notes/{{ note_id }}/delete" data-confirm="Delete this note and its links?" class="delete-note">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link danger">Delete note</button></form>
+{% else %}
+<section class="card prose">{% if body %}{{ body }}{% else %}<p class="muted">No details yet; other notes link here.</p>{% endif %}</section>
+{% endif %}
+{% if links or back %}
+<div class="two-col">
+  {% if links %}
+  <section class="card">
+    <h2>Links</h2>
+    <ul class="note-list">{% for rel, id, title in links %}<li><span class="rel">{{ rel }}</span> <a href="/notes/{{ id }}">{{ title }}</a></li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+  {% if back %}
+  <section class="card">
+    <h2>Linked from</h2>
+    <ul class="note-list">{% for rel, id, title in back %}<li><a href="/notes/{{ id }}">{{ title }}</a> <span class="rel">{{ rel }}</span></li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+</div>
+{% endif %}
+{% if n.sources %}<p class="muted small">From {{ n.sources | join(", ") }}</p>{% endif %}
+{% endblock %}

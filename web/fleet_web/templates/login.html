@@ -4,7 +4,7 @@
 {% block content %}
 <form class="card narrow" method="post" action="/login">
   <h1>Fleet</h1>
-  <p class="muted">Sign in to manage your Claude instances.</p>
+  <p class="muted">Sign in to manage your agents.</p>
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
   <label>Email<input type="email" name="email" value="{{ email or '' }}" autocomplete="username" required autofocus></label>
   <label>Password<input type="password" name="password" autocomplete="current-password" required></label>

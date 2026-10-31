@@ -23,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import SOCKET, SOURCE_FILE, STATE_DIR, VERSION_FILE, config
+from . import HUB_FILE, SOCKET, SOURCE_FILE, STATE_DIR, VERSION_FILE, config
 
 UNIT_PATH = Path.home() / ".config/systemd/user/fleetd.service"
 UNIT = """\
@@ -165,6 +165,9 @@ def install_hub(repo, origin, show_hardware, version):
 def cmd_install(args):
     repo = find_repo(args.repo) if args.hub else (Path(args.repo) if args.repo else None)
     version = build_version(repo)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if args.hub:
+        HUB_FILE.write_text("This machine is Fleet's hub.\n")
     install_fleetd(version, repo)
     if args.hub:
         install_hub(repo, args.origin, args.show_hardware, version)
@@ -184,6 +187,8 @@ def cmd_status(args):
 def cmd_uninstall(args):
     systemctl("disable", "--now", "--quiet", "fleetd", check=False)
     UNIT_PATH.unlink(missing_ok=True)
+    if args.hub:
+        HUB_FILE.unlink(missing_ok=True)
     systemctl("daemon-reload")
     say("fleetd removed")
     if args.hub:

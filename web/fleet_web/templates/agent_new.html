@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}New agent · Fleet{% endblock %}
+{% block head %}<script src="{{ static('agents.js') }}" defer></script>{% endblock %}
+{% block content %}
+<h1>New agent</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if devices %}
+<form method="post" action="/agents" class="card narrow" id="new-agent">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Name
+    <input type="text" name="name" value="{{ form.name }}" required maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,31}"
+      autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="e.g. fleet-ui">
+  </label>
+  <fieldset class="field">
+    <legend>Device</legend>
+    <div class="chips">
+      {% for d in devices %}
+      <label class="chip"><input type="radio" name="device" value="{{ d.name }}" data-types="{{ d.types | map(attribute='id') | join(' ') }}"
+        data-list="folders-{{ loop.index }}"{% if form.device == d.name or not form.device and loop.first %} checked{% endif %}>
+        <span>{{ d.name }}{% if d.local %} <small>hub</small>{% endif %}</span></label>
+      {% endfor %}
+    </div>
+  </fieldset>
+  <fieldset class="field">
+    <legend>Agent type</legend>
+    <div class="chips" id="types">
+      {% for id, label in types.items() %}
+      <label class="chip"><input type="radio" name="type" value="{{ id }}"{% if form.type == id or not form.type and loop.first %} checked{% endif %}>
+        <span>{{ label }}</span></label>
+      {% endfor %}
+    </div>
+  </fieldset>
+  <label id="command-field">Command
+    <input type="text" name="command" value="{{ form.command }}" autocapitalize="off" autocomplete="off" spellcheck="false"
+      placeholder="e.g. python3 bot.py">
+  </label>
+  <label class="check" id="rc-field"><input type="checkbox" name="remote_control"{% if form.remote_control != "off" %} checked{% endif %}> Remote control</label>
+  <label>Folder
+    <span class="combo"><input type="text" name="folder" value="{{ form.folder }}" list="folders-1" required autocapitalize="off" autocomplete="off" spellcheck="false"></span>
+  </label>
+  {% for d in devices %}
+  <datalist id="folders-{{ loop.index }}">{% for f in d.folders %}<option value="{{ f }}">{% endfor %}</datalist>
+  {% endfor %}
+  <fieldset class="field">
+    <legend>Project</legend>
+    <div class="chips" id="projects">
+      <label class="chip"><input type="radio" name="project" value=""{% if not form.project %} checked{% endif %}><span>None</span></label>
+      {% for p in projects %}<label class="chip"><input type="radio" name="project" value="{{ p.name }}"{% if form.project == p.name %} checked{% endif %}><span>{{ p.name }}</span></label>{% endfor %}
+      {% if not projects %}<a class="small chip-link" href="/projects/new">New project</a>{% endif %}
+    </div>
+  </fieldset>
+  {% for d in devices %}{% if not d.linger %}
+  <p class="notice small linger" data-device="{{ d.name }}">On {{ d.name }}, agents stop when you log out until you run
+    <code>sudo loginctl enable-linger {{ d.user }}</code> there once.</p>
+  {% endif %}{% endfor %}
+  <button class="primary">Create and open</button>
+</form>
+{% elif not error %}
+<p class="error">No connected device answered. Check the Devices tab.</p>
+{% endif %}
+{% endblock %}

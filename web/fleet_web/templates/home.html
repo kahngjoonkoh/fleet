@@ -1,8 +1,41 @@
 {% extends "base.html" %}
+{% from "macros.html" import agent_card %}
+{% block title %}Agents · Fleet</div>
+{% endblock %}
 {% block content %}
-<h1>Instances</h1>
+<div class="title-row">
+  <h1>Agents</h1>
+  {% if user.is_admin %}<a class="primary button" href="/agents/new">New agent</a>{% endif %}
+</div>
+<div data-live="agents">
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% for d in unreachable %}
+<p class="muted small">Couldn't reach {{ d.name }}: {{ d.error }}</p>
+{% endfor %}
+{% if agents %}
+<div class="device-grid">
+{% for a in agents %}
+{{ agent_card(a, user, csrf, now, sleep_after) }}
+{% endfor %}
+</div>
+{% elif not error %}
 <section class="card empty">
-  <p><strong>Nothing connected yet.</strong></p>
-  <p class="muted">Every Claude instance on your machines will be listed here with its status and Remote Control link.</p>
+  <p><strong>No agents yet.</strong></p>
+  <p class="muted">{% if user.is_admin %}Start one on any connected machine with New agent. It keeps running when you close this page.{% else %}Agents an admin starts show up here.{% endif %}</p>
 </section>
+{% endif %}
+{% if others %}
+<h2 class="section-head">Other tmux sessions</h2>
+<p class="muted small">Started outside Fleet, so Fleet only lists them.</p>
+<div class="table-wrap">
+<table>
+  <tr><th>Session</th><th>Device</th><th>Started</th>{% if user.is_admin %}<th></th>{% endif %}</tr>
+  {% for s in others %}
+  <tr><td>{{ s.name }}</td><td>{{ s.device }}</td><td>{{ s.created | when }}</td>
+    {% if user.is_admin %}<td>{% if s.name is match_tmux %}<a href="/terminal?device={{ s.device | urlencode }}&amp;tmux={{ s.name | urlencode }}">Open</a>{% endif %}</td>{% endif %}</tr>
+  {% endfor %}
+</table>
+</div>
+{% endif %}
+</div>
 {% endblock %}

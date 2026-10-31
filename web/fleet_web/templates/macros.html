@@ -1,0 +1,78 @@
+{# Shared pieces of pages. #}
+
+{# One agent: status, details and (for admins) its actions. Used by the Agents tab and project pages. #}
+{% macro agent_card(a, user, csrf, now, sleep_after) %}
+{% set p = a.pane %}
+<section class="card device">
+  <header class="device-head">
+    <h2>{{ a.name }}</h2>
+    <span class="pill">{{ a.device }}</span>
+    {% if a.state == "running" and p and p.last_active and now - p.last_active < 15 %}
+    <span class="status on">Active</span>
+    {% elif a.state == "running" %}
+    <span class="status idle">Idle{% if p and p.last_active %} {{ (now - p.last_active) | duration }}{% endif %}</span>
+    {% elif a.state == "asleep" %}
+    <span class="status idle">Asleep</span>
+    {% elif a.state == "exited" %}
+    <span class="status off">Exited{% if p and p.exit_code is not none %} · code {{ p.exit_code }}{% endif %}</span>
+    {% elif a.state == "failed" %}
+    <span class="status off">Failed to start</span>
+    {% else %}
+    <span class="status idle">Stopped</span>
+    {% endif %}
+    {% if a.lazy %}
+    {% if user.is_admin %}
+    <form method="post" action="/agents/{{ a.device | urlencode }}/{{ a.name | urlencode }}/{{ 'unpin' if a.pinned else 'pin' }}" class="pin-form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="pin{{ ' on' if a.pinned }}" aria-pressed="{{ 'true' if a.pinned else 'false' }}"
+        aria-label="{{ 'Unpin: let it sleep when idle' if a.pinned else 'Pin: never put it to sleep' }}"
+        title="{{ 'Pinned: never sleeps. Tap to unpin.' if a.pinned else 'Pin: never put it to sleep' }}"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 6 4 4H6l4-4z M12 13v8" fill="{{ 'currentColor' if a.pinned else 'none' }}" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+    </form>
+    {% elif a.pinned %}
+    <span class="pin on" title="Pinned: never sleeps"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 6 4 4H6l4-4z M12 13v8" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg></span>
+    {% endif %}
+    {% endif %}
+  </header>
+  <dl class="stats">
+    <dt>Project</dt><dd>{% if a.project %}<a href="/projects/{{ a.project | urlencode }}">{{ a.project }}</a>{% else %}<span class="muted">None</span>{% endif %}</dd>
+    <dt>Type</dt><dd>{{ a.label }}{% if a.remote_control %} · Remote control{% endif %}</dd>
+    <dt>Folder</dt><dd class="path">{{ a.folder }}</dd>
+    {% if a.started %}<dt>Up</dt><dd>{{ (now - a.started) | duration }}{% if p and p.viewers %} · open in {{ p.viewers }} terminal{{ "" if p.viewers == 1 else "s" }}{% endif %}</dd>{% endif %}
+    {% if a.memory %}<dt>Memory</dt><dd>{{ a.memory | size }}</dd>{% endif %}
+    <dt>Sleep</dt><dd>{% if a.state == "asleep" %}Wakes when opened{% elif not a.lazy %}Never; it can't resume{% elif a.pinned %}Never; pinned{% elif not sleep_after %}Off in Settings{% else %}After {{ sleep_after | minutes }} idle{% endif %}</dd>
+  </dl>
+  {% if user.is_admin %}
+  {% set base = "/agents/" ~ (a.device | urlencode) ~ "/" ~ (a.name | urlencode) %}
+  <div class="actions">
+    {% if a.state in ("running", "exited", "asleep") %}
+    <a href="/terminal?device={{ a.device | urlencode }}&amp;agent={{ a.name | urlencode }}">Open</a>
+    {% endif %}
+    {% if a.state not in ("running", "asleep") %}
+    <form method="post" action="{{ base }}/start"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="link">{{ "Start" if a.state == "stopped" else "Restart" }}</button></form>
+    {% endif %}
+    <a href="{{ base }}/edit">Edit</a>
+    {% if a.state in ("running", "exited", "asleep") %}
+    <form method="post" action="{{ base }}/stop" data-confirm="Stop {{ a.name }} on {{ a.device }}? Whatever it's doing ends now, and it stays stopped after a reboot. Start picks the conversation up again.">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link danger">Stop</button></form>
+    {% else %}
+    <form method="post" action="{{ base }}/remove" data-confirm="Remove {{ a.name }} from {{ a.device }}? The folder isn't touched.">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link danger">Remove</button></form>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endmacro %}
+
+{# A note's status as a small tag: open, done, fixed, reached, ... #}
+{% macro status_tag(status) %}{% if status %} <span class="tag st-{{ status }}">{{ status }}</span>{% endif %}{% endmacro %}
+
+{# A graph of notes (or projects) that graph.js lays out; the data rides along as JSON. #}
+{% macro graph_view(graph, id) %}
+<section class="card graph-card">
+  <script type="application/json" id="{{ id }}-data">{{ graph | tojson }}</script>
+  <div class="graph-legend" data-legend="{{ id }}-data"></div>
+  <svg class="graph" data-graph="{{ id }}-data" role="img" aria-label="Graph of notes and how they link"></svg>
+  <p class="muted small graph-help">Drag to move, scroll or pinch to zoom, tap a dot to open it. Tap a kind above to hide it.</p>
+</section>
+{% endmacro %}

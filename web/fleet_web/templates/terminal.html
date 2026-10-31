@@ -1,27 +1,44 @@
 {% extends "base.html" %}
-{% block title %}Terminal · Fleet{% endblock %}
+{% block title %}{% if attached %}{{ attached }} · {{ current }}{% else %}Terminal{% if device %} · {{ device }}{% endif %}{% endif %} · Fleet{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/vendor/xterm.css">
-<script src="/static/vendor/xterm.js" defer></script>
-<script src="/static/vendor/addon-fit.js" defer></script>
-<script src="/static/term.js" defer></script>
+<link rel="stylesheet" href="{{ static('vendor/xterm.css') }}">
+<script src="{{ static('vendor/xterm.js') }}" defer></script>
+<script src="{{ static('vendor/addon-fit.js') }}" defer></script>
+<script src="{{ static('term.js') }}" defer></script>
 {% endblock %}
 {% block body_class %}app{% endblock %}
 {% block main_class %}term-main{% endblock %}
 {% block content %}
-<div id="term" class="term"></div>
+<div class="term-bar">
+  <details class="menu">
+    <summary aria-label="Switch device">
+      <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h11l-3-3M17 17H6l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      {% if attached %}<strong>{{ attached }}</strong> <span class="term-on">on {{ current }}</span>{% else %}<strong>{{ current }}</strong>{% endif %}
+      <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </summary>
+    <div class="menu-panel">
+      <p class="menu-head">{{ "Open a shell on" if attached else "Switch device" }}</p>
+      {% for d in devices %}
+      <a href="/terminal{% if not d.local %}?device={{ d.name | urlencode }}{% endif %}"{% if d.name == current and not attached %} aria-current="true"{% endif %}>{{ d.name }}{% if d.local %} <span class="muted">· Hub</span>{% endif %}</a>
+      {% else %}
+      <p class="muted small menu-who">No other connected devices.</p>
+      {% endfor %}
+    </div>
+  </details>
+  <span class="term-font" id="term-font">
+    <button data-font="-1" aria-label="Smaller text">A−</button><button data-font="1" aria-label="Larger text">A+</button>
+  </span>
+</div>
+<div id="term" class="term" data-agent="{{ agent }}" data-tmux="{{ tmux }}"></div>
 <div id="term-status" class="term-status" hidden>
   <span></span> <button class="link" id="reconnect">Reconnect</button>
 </div>
 <div class="keys" id="keys" aria-label="Extra keys">
-  <button data-k="esc">ESC</button><button data-k="tab">TAB</button>
-  <button data-mod="ctrl">CTRL</button><button data-mod="alt">ALT</button>
+  <button data-k="esc">ESC</button><button data-s="/">/</button><button data-s="-" aria-label="Minus">―</button>
+  <button data-k="home">HOME</button><button data-k="up" aria-label="Up">↑</button>
+  <button data-k="end">END</button><button data-k="pgup">PGUP</button>
+  <button data-k="tab">TAB</button><button data-mod="ctrl">CTRL</button><button data-mod="alt">ALT</button>
   <button data-k="left" aria-label="Left">←</button><button data-k="down" aria-label="Down">↓</button>
-  <button data-k="up" aria-label="Up">↑</button><button data-k="right" aria-label="Right">→</button>
-  <button data-font="1" aria-label="Larger text">A+</button>
-  <button data-s="/">/</button><button data-s="-">-</button><button data-s="|">|</button><button data-s="~">~</button>
-  <button data-k="home">HOME</button><button data-k="end">END</button>
-  <button data-k="pgup">PGUP</button><button data-k="pgdn">PGDN</button>
-  <button data-font="-1" aria-label="Smaller text">A−</button>
+  <button data-k="right" aria-label="Right">→</button><button data-k="pgdn">PGDN</button>
 </div>
 {% endblock %}

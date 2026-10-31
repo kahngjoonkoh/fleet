@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "macros.html" import agent_card, graph_view, status_tag %}
+{% block title %}{{ p.name }} · Projects · Fleet{% endblock %}
+{% block head %}<script src="{{ static('graph.js') }}" defer></script>{% endblock %}
+{% block content %}
+<p class="crumbs small"><a href="/projects">Projects</a> /</p>
+<div class="title-row">
+  <h1>{{ p.name }}</h1>
+  {% if user.is_admin %}<a class="primary button" href="/agents/new?project={{ p.name | urlencode }}">New agent here</a>{% endif %}
+</div>
+<p class="muted small project-where">{{ p.agents | length }} agent{{ "" if p.agents | length == 1 else "s" }} · {{ p.notes }} notes · updated {{ p.updated or "never" }}</p>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if notice %}<p class="notice small" role="status">{{ notice }}</p>{% endif %}
+{% if brain_error %}<p class="error small">Last brain update failed: {{ brain_error }}</p>{% endif %}
+
+<section class="card prose">{{ overview }}</section>
+
+{% set todos = by_kind.get("todo", []) %}{% set milestones = by_kind.get("milestone", []) %}
+{% if todos or milestones %}
+<div class="two-col">
+  {% if todos %}
+  <section class="card">
+    <h2>Todos</h2>
+    <ul class="note-list">{% for id, n in todos %}<li class="{{ 'done' if n.status == 'done' }}"><a href="/notes/{{ id }}">{{ n.title }}</a>{{ status_tag(n.status) }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+  {% if milestones %}
+  <section class="card">
+    <h2>Milestones</h2>
+    <ul class="note-list">{% for id, n in milestones %}<li><a href="/notes/{{ id }}">{{ n.title }}</a>{{ status_tag(n.status) }}{% if n.date %} <span class="muted small">{{ n.date }}</span>{% endif %}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if graph.nodes %}
+<div class="title-row section-head"><h2>Brain</h2>
+  <form class="search-inline" action="/search"><input type="hidden" name="project" value="{{ p.name }}">
+    <input type="search" name="q" placeholder="Search {{ p.name }}" aria-label="Search this project"></form></div>
+<p class="muted small">Faded dots belong to other projects or to no project; they're what this project's notes link to.</p>
+{{ graph_view(graph, "graph-project") }}
+{% endif %}
+
+<h2 class="section-head">Agents</h2>
+<div data-live="project-agents">
+{% if agents %}
+<div class="device-grid">
+{% for a in agents %}{{ agent_card(a, user, csrf, now, sleep_after) }}{% endfor %}
+</div>
+{% else %}
+<p class="muted small">No agents yet. Start one with New agent here, or move one in from its Edit page.</p>
+{% endif %}
+</div>
+
+{% if by_kind %}
+<h2 class="section-head">Notes</h2>
+<div class="kinds">
+{% for kind, items in by_kind | dictsort %}{% if kind not in ("todo", "milestone") %}
+<details class="card kind"{% if kind in ("decision", "requirement") %} open{% endif %}>
+  <summary><span class="kind-dot" data-kind="{{ kind }}"></span>{{ kind | capitalize }} <span class="muted small">{{ items | length }}</span></summary>
+  <ul class="note-list">{% for id, n in items %}<li><a href="/notes/{{ id }}">{{ n.title }}</a>{{ status_tag(n.status) }}</li>{% endfor %}</ul>
+</details>
+{% endif %}{% endfor %}
+</div>
+{% endif %}
+
+{% if sessions %}
+<h2 class="section-head">Sessions</h2>
+<ul class="note-list card">{% for id, n in sessions %}<li><a href="/notes/{{ id }}">{{ n.title }}</a> <span class="muted small">{{ n.date }}</span></li>{% endfor %}</ul>
+{% endif %}
+
+{% if user.is_admin %}
+<section class="card project-admin">
+  <h2>Brain</h2>
+  <p class="muted small">Fleet updates the brain when a Claude Code or Pi agent goes quiet, and every 2 hours while one
+    stays busy, filing each note under the projects it concerns, using {{ {"subscription": "your Claude subscription", "anthropic": "your Anthropic API key", "openai": "your OpenAI-compatible API"}[writer] }}
+    (<a href="/settings/brain">change</a>).</p>
+  <div class="actions">
+    <form method="post" action="/projects/{{ p.name }}/digest"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="link">Update brain now</button></form>
+    <form method="post" action="/projects/{{ p.name }}/instructions"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="link">Update its agents' AGENTS.md</button></form>
+    <form method="post" action="/projects/{{ p.name }}/delete" data-confirm="Delete project {{ p.name }}? Notes that concern only it go too; shared ones stay. Its agents keep running, in no project.">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link danger">Delete project</button></form>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

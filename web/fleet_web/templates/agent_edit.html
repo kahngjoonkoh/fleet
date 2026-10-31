@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ a.name }} · Agents · Fleet{% endblock %}
+{% block content %}
+<p class="crumbs small"><a href="/">Agents</a> /</p>
+<h1>{{ a.name }} <span class="muted small">on {{ a.device }}</span></h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" class="card narrow">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <p class="muted small">{{ a.label }} in <span class="path">{{ a.folder }}</span></p>
+  <label>Name
+    <input type="text" name="name" value="{{ a.name }}" required maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,31}"
+      autocapitalize="off" autocomplete="off" spellcheck="false">
+  </label>
+  <fieldset class="field">
+    <legend>Project</legend>
+    <div class="chips">
+      <label class="chip"><input type="radio" name="project" value=""{% if not a.project %} checked{% endif %}><span>None</span></label>
+      {% for p in projects %}<label class="chip"><input type="radio" name="project" value="{{ p.name }}"{% if a.project == p.name %} checked{% endif %}><span>{{ p.name }}</span></label>{% endfor %}
+    </div>
+  </fieldset>
+  {% if a.rc_capable %}
+  <input type="hidden" name="was_rc" value="{{ '1' if a.remote_control else '0' }}">
+  <label class="check"><input type="checkbox" name="remote_control"{% if a.remote_control %} checked{% endif %}> Remote control
+    {% if a.state == "running" %}<span class="hint">· from its next start</span>{% endif %}</label>
+  {% endif %}
+  <button class="primary" data-confirm-if-renamed="{{ a.name }}">Save</button>
+</form>
+{% endblock %}

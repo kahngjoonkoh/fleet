@@ -1,11 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Devices · Fleet{% endblock %}
-{% block head %}<meta http-equiv="refresh" content="30">{% endblock %}
 {% block content %}
 <div class="title-row">
   <h1>Devices</h1>
-  <p class="muted small">Updates every 30 s · <a href="/devices">Refresh</a></p>
 </div>
+<div data-live="devices">
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 <div class="device-grid">
 {% for d in devices %}
@@ -25,7 +24,7 @@
   <div class="update" role="status">
     <p><strong>Update available</strong> · {{ upd.behind_by }} new commit{{ "" if upd.behind_by == 1 else "s" }}</p>
     <p class="muted small">Run on {{ d.name }}:</p>
-    <pre><code>{{ d.update_cmd }}</code></pre>
+    <div class="copy-box"><pre><code>{{ d.update_cmd }}</code></pre><button type="button" class="copy" aria-label="Copy command">Copy</button></div>
   </div>
   {% endif %}
   <dl class="stats">
@@ -60,13 +59,12 @@
 </section>
 {% endfor %}
 </div>
-{% if devices | length <= 1 and not error %}
+</div>
 <section class="card howto">
   <h2>Add a machine</h2>
   <p class="muted small">1. On the machine, install fleetd:</p>
-  <pre><code>{{ install_cmd }}</code></pre>
+  <div class="copy-box"><pre><code>{{ install_cmd }}</code></pre><button type="button" class="copy" aria-label="Copy command">Copy</button></div>
   <p class="muted small">2. On the hub, add it by its ssh name:</p>
-  <pre><code>fleet devices add NAME</code></pre>
+  <div class="copy-box"><pre><code>fleet devices add NAME</code></pre><button type="button" class="copy" aria-label="Copy command">Copy</button></div>
 </section>
-{% endif %}
 {% endblock %}

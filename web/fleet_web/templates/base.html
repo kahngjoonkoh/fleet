@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>{% block title %}Fleet{% endblock %}</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="{{ static('style.css') }}">
 <!-- crossorigin=use-credentials: Cloudflare Access only lets the manifest through with its cookie. -->
 <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
-<link rel="icon" href="/static/icons/favicon-48.png" sizes="48x48" type="image/png">
-<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="icon" href="{{ static('icons/favicon-48.png') }}" sizes="48x48" type="image/png">
+<link rel="apple-touch-icon" href="{{ static('icons/apple-touch-icon.png') }}">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#1f1f1d" media="(prefers-color-scheme: dark)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Fleet">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
-<script src="/static/app.js" defer></script>
+<script src="{{ static('app.js') }}" defer></script>
 {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -23,7 +23,8 @@
 <header class="bar">
   <a class="brand" href="/">Fleet</a>
   <nav>
-    <a href="/"{% if tab == "instances" %} aria-current="page"{% endif %}>Instances</a>
+    <a href="/"{% if tab == "agents" %} aria-current="page"{% endif %}>Agents</a>
+    <a href="/projects"{% if tab == "projects" %} aria-current="page"{% endif %}>Projects</a>
     <a href="/devices"{% if tab == "devices" %} aria-current="page"{% endif %}>Devices{% if updates %}<span class="dot" title="Update available" aria-label="(update available)"></span>{% endif %}</a>
     {% if user.is_admin %}<a href="/terminal"{% if tab == "terminal" %} aria-current="page"{% endif %}>Terminal</a>{% endif %}
   </nav>

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "macros.html" import status_tag %}
+{% block title %}{% if q %}{{ q }} · {% endif %}Search · Fleet{% endblock %}
+{% block content %}
+<p class="crumbs small"><a href="/projects">Projects</a> /</p>
+<h1>Search the brain</h1>
+<form class="search-bar" action="/search">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search every project's brain" aria-label="Search" autofocus>
+  {% if project %}<label class="check small"><input type="checkbox" name="project" value="{{ project }}" checked> Only {{ project }}</label>{% endif %}
+</form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if q and not error %}
+{% if results %}
+<ul class="results">
+  {% for r in results %}
+  <li class="card">
+    <a href="/notes/{{ r.id }}"><span class="kind-dot" data-kind="{{ r.kind }}"></span> {{ r.title }}</a>{{ status_tag(r.status) }}
+    <span class="muted small"> · {% if r.scope == "global" %}rule for every agent{% else %}{{ r.projects | join(", ") or "no project" }}{% endif %}</span>
+    {% if r.snip %}<p class="muted small">{{ r.snip }}</p>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}<p class="muted">Nothing matches {{ q }}.</p>{% endif %}
+{% endif %}
+{% endblock %}

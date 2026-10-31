@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Fleet",
   "short_name": "Fleet",
-  "description": "Your Claude Code sessions and a shell on your hosts",
+  "description": "Your agents and a shell on your machines",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -15,6 +15,6 @@
   ],
   "shortcuts": [
     {"name": "Terminal", "url": "/terminal", "icons": [{"src": "/static/icons/icon-192.png", "sizes": "192x192"}]},
-    {"name": "Instances", "url": "/", "icons": [{"src": "/static/icons/icon-192.png", "sizes": "192x192"}]}
+    {"name": "Agents", "url": "/", "icons": [{"src": "/static/icons/icon-192.png", "sizes": "192x192"}]}
   ]
 }
