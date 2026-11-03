@@ -91,7 +91,10 @@ def linger_on():
 def build_version(repo):
     """e.g. 0.1.0+bcb752b, or 0.1.0+bcb752b.dirty when installed from a checkout with local edits."""
     version = importlib.metadata.version("fleet")
-    if repo:
+    if repo and (marker := Path(repo) / ".fleet-commit").exists():  # downloaded without git
+        commit = marker.read_text().strip()[:7]
+        return f"{version}+{commit}" if commit else version
+    if repo and shutil.which("git"):
         git = lambda *a: run("git", "-C", str(repo), *a, check=False, capture=True).stdout.strip()
         if commit := git("rev-parse", "--short", "HEAD"):
             version += f"+{commit}" + (".dirty" if git("status", "--porcelain") else "")

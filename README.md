@@ -9,7 +9,7 @@ A dashboard for the Claude Code sessions running on your machines.
 
 ## Install
 
-Every machine needs git and curl; the hub also needs Docker. Nothing needs sudo, and the installer
+Every machine needs curl and tar (git is used if it's there, but isn't required); the hub also needs Docker. Nothing needs sudo, and the installer
 fetches [uv](https://docs.astral.sh/uv/) if it's missing.
 
 On the hub (once):
