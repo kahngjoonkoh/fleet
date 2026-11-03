@@ -26,6 +26,7 @@
     <a href="/"{% if tab == "agents" %} aria-current="page"{% endif %}>Agents</a>
     <a href="/projects"{% if tab == "projects" %} aria-current="page"{% endif %}>Projects</a>
     <a href="/devices"{% if tab == "devices" %} aria-current="page"{% endif %}>Devices{% if updates %}<span class="dot" title="Update available" aria-label="(update available)"></span>{% endif %}</a>
+    {% if user.is_admin %}<a href="/files"{% if tab == "files" %} aria-current="page"{% endif %}>Files</a>{% endif %}
     {% if user.is_admin %}<a href="/terminal"{% if tab == "terminal" %} aria-current="page"{% endif %}>Terminal</a>{% endif %}
   </nav>
   <details class="menu">

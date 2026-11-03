@@ -9,9 +9,7 @@
   <header class="agent-row" data-toggle>
     <h2>{{ a.name }}</h2>
     <span class="pill">{{ a.device }}</span>
-    {% if a.state == "running" and p and (p.busy or la and now - la < 15) %}
-    <span class="status on working">Active</span>
-    {% elif a.state == "running" %}
+    {% if a.state == "running" %}
     <span class="status on">Connected</span>
     {% elif a.state == "asleep" %}
     <span class="status idle">Sleeping</span>
@@ -44,7 +42,14 @@
     <dt>Folder</dt><dd class="path">{{ a.folder }}</dd>
     {% if a.started %}<dt>Up</dt><dd>{{ (now - a.started) | duration }}{% if p and p.viewers %} · open in {{ p.viewers }} terminal{{ "" if p.viewers == 1 else "s" }}{% endif %}</dd>{% endif %}
     {% if a.memory %}<dt>Memory</dt><dd>{{ a.memory | size }}</dd>{% endif %}
-    <dt>Sleep</dt><dd>{% if a.state == "asleep" %}Wakes when opened{% elif not a.lazy %}Never; it can't resume{% elif a.pinned %}Never; pinned{% elif not sleep_after %}Off in Settings{% else %}After {{ sleep_after | minutes }} idle{% endif %}</dd>
+    {% if a.type in ("claude", "pi") %}{% set b = a.brain or {} %}
+    <dt>Brain</dt><dd>{% if a.brain_saving %}Saving now{% else %}
+      {% if b.saved %}Saved {{ "just now" if now - b.saved < 60 else (now - b.saved) | duration ~ " ago" }}{% endif %}
+      {% if b.read and (not b.saved or b.read - b.saved > 60) %}{% if b.saved %}<br><span class="muted">{% endif %}Checked {{ (now - b.read) | duration }} ago: nothing new{% if b.saved %}</span>{% endif %}{% endif %}
+      {% if not b.saved and not b.read %}Not read yet{% endif %}
+      {% if a.brain_next is not none %}<br><span class="muted">Next check in {{ a.brain_next | duration if a.brain_next >= 60 else "under a minute" }}</span>{% endif %}
+    {% endif %}</dd>{% endif %}
+    <dt>Sleep</dt><dd>{% if a.state == "asleep" %}Wakes when opened{% elif not a.lazy %}Never; it can't resume{% elif a.pinned %}Only when you press Sleep; pinned{% elif not sleep_after %}Off in Settings{% else %}After {{ sleep_after | minutes }} idle{% endif %}</dd>
   </dl>
   {% if user.is_admin %}
   {% set base = "/agents/" ~ (a.device | urlencode) ~ "/" ~ (a.name | urlencode) %}
@@ -53,6 +58,10 @@
     <form method="post" action="{{ base }}/wake"><input type="hidden" name="csrf" value="{{ csrf }}">
       <button class="link">Wake</button></form>
     {% endif %}
+    {% if a.state == "running" and a.lazy %}
+    <form method="post" action="{{ base }}/sleep"{% if p and (p.busy or la and now - la < 15) %} data-confirm="{{ a.name }} is working right now. Put it to sleep anyway? What it's doing stops; opening it picks the conversation up again."{% endif %}>
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link">Sleep</button></form>
+    {% endif %}
     {% if a.state in ("running", "exited", "asleep") %}
     <a href="/terminal?device={{ a.device | urlencode }}&amp;agent={{ a.name | urlencode }}">Open</a>
     {% endif %}
@@ -60,6 +69,7 @@
     <form method="post" action="{{ base }}/start"><input type="hidden" name="csrf" value="{{ csrf }}">
       <button class="link">{{ "Start" if a.state == "stopped" else "Restart" }}</button></form>
     {% endif %}
+    <a href="{{ files_url('', a.device, a.folder) }}">Files</a>
     <a href="{{ base }}/edit">Edit</a>
     {% if a.state in ("running", "exited", "asleep") %}
     <form method="post" action="{{ base }}/stop" data-confirm="Stop {{ a.name }} on {{ a.device }}? Whatever it's doing ends now, and it stays stopped after a reboot. Start picks the conversation up again.">
@@ -86,3 +96,6 @@
   <p class="muted small graph-help">Drag to move, scroll or pinch to zoom, tap a dot to open it. Tap a kind above to hide it.</p>
 </section>
 {% endmacro %}
+
+{# Files tab icons: dir, file, up, download. #}
+{% macro file_icon(kind) %}<svg class="ficon {{ kind }}" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">{% if kind == "dir" %}<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="currentColor" opacity=".85"/>{% elif kind == "up" %}<path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>{% elif kind == "download" %}<path d="M12 4v11M7 10l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>{% else %}<path d="M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>{% endif %}</svg>{% endmacro %}

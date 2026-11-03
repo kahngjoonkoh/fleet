@@ -10,9 +10,11 @@ import os
 import pty
 import pwd
 import re
+import shlex
 import signal
 import socket
 import struct
+import sys
 import termios
 import time
 from pathlib import Path
@@ -20,13 +22,14 @@ from pathlib import Path
 import aiohttp
 from aiohttp import WSMsgType, web
 
-from . import GITHUB_REPO, HUB_FILE, SOCKET, STATE_DIR, agents, brain, config, info
+from . import GITHUB_REPO, HUB_FILE, SOCKET, STATE_DIR, agents, brain, config, files, info
 
 HOST = socket.gethostname()
 # The read-only brain socket agents use; on other devices the same path is an ssh forward to this one.
 BRAIN_SOCKET = STATE_DIR / "brain.sock"
 INFO_SCRIPT = Path(info.__file__).read_bytes()
 AGENTS_SCRIPT = Path(agents.__file__).read_bytes()
+FILES_SCRIPT = Path(files.__file__).read_text()
 # ssh connection sharing, kept out of STATE_DIR because fleet-web can see that directory.
 SSH_MUX = Path.home() / ".cache/fleet"
 
@@ -144,10 +147,12 @@ async def everywhere(action):
 
 async def agents_list(request):
     devices = await everywhere("list")
-    if HUB_FILE.exists():  # each agent's home project, which the brain decides
+    if HUB_FILE.exists():  # each agent's home project, which the brain decides, and its last brain save
+        saves = brain.saves()
         for d in devices:
             for a in d.get("agents", []):
                 a["project"] = brain.home_of(f"{d['name']}/{a['name']}")
+                a["brain"] = saves.get(f"{d['name']}/{a['name']}")
     return web.json_response({"devices": devices, "checked_at": int(time.time())})
 
 
@@ -180,6 +185,105 @@ async def agents_action(request):
     if action == "remove" and "error" not in result and HUB_FILE.exists():
         brain.forget_agent(f"{here}/{body.get('name', '')}")
     return web.json_response(result)
+
+
+# --- files (the Files tab) ----------------------------------------------------------------
+
+async def files_proc(device_name, action, args, stdin=False):
+    """Starts files.py ACTION on a machine (`python3 -c`, so stdin is free for an upload)."""
+    device = find_device(device_name)
+    arg = base64.b64encode(json.dumps(args).encode()).decode()
+    if device is None:
+        argv = [sys.executable, "-c", FILES_SCRIPT, action, arg]
+    else:
+        argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", *ssh_options(), device["ssh"],
+                f"python3 -c {shlex.quote(FILES_SCRIPT)} {action} {arg}"]
+    return await asyncio.create_subprocess_exec(
+        *argv, stdin=asyncio.subprocess.PIPE if stdin else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+
+
+def files_error(err, code):
+    lines = err.decode(errors="replace").strip().splitlines()
+    return lines[-1] if lines else f"exited {code}"
+
+
+async def files_call(request):
+    """GET /files/{list,stat}?device=&path=, POST /files/{mkdir,rename,delete} {"device", "path", ...}:
+    JSON in, JSON out, or {"error"}."""
+    action = request.match_info["action"]
+    args = dict(request.query) if request.method == "GET" else await request.json()
+    proc = await files_proc(args.pop("device", None), action, args)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), 30)
+    except TimeoutError:
+        proc.kill()
+        return web.json_response({"error": "no answer within 30 seconds"})
+    if proc.returncode:
+        return web.json_response({"error": files_error(err, proc.returncode)})
+    return web.json_response(json.loads(out))
+
+
+async def files_stream(request):
+    """GET /files/{read,zip}?device=&path=[&offset=&limit=]: the bytes as they come. A failure before
+    the first byte is a 400 with {"error"}; after that the download just ends early."""
+    args = dict(request.query)
+    proc = await files_proc(args.pop("device", None), request.match_info["action"], args)
+    response = None
+    try:
+        first = await proc.stdout.read(1 << 16)
+        if not first:
+            err = await proc.stderr.read()
+            await proc.wait()
+            if proc.returncode:
+                return web.json_response({"error": files_error(err, proc.returncode)}, status=400)
+        response = web.StreamResponse(headers={"Content-Type": "application/octet-stream"})
+        await response.prepare(request)
+        chunk = first
+        while chunk:
+            await response.write(chunk)
+            chunk = await proc.stdout.read(1 << 16)
+        await proc.wait()
+        await response.write_eof()
+        return response
+    finally:
+        if proc.returncode is None:  # the browser went away mid-download
+            proc.kill()
+            await proc.wait()
+
+
+async def body_chunks(request):
+    """The request body as it arrives. aiohttp doesn't end the stream when the sender disappears
+    (the read would wait forever, holding the upload's lock), so look for that while it's quiet."""
+    while True:
+        try:
+            chunk = await asyncio.wait_for(request.content.readany(), 2)
+        except asyncio.TimeoutError:
+            if request.transport is None or request.transport.is_closing():
+                raise ConnectionResetError("the sender went away")
+            continue
+        if not chunk:
+            return
+        yield chunk
+
+
+async def files_write(request):
+    """POST /files/write?device=&path=[&overwrite=1][&size=N] with the file as the body, or
+    ...&upload=ID&step=start|piece|cancel&offset=&total= for one step of a big upload."""
+    args = dict(request.query)
+    args["overwrite"] = args.get("overwrite") == "1"
+    action = "upload" if "upload" in args else "write"
+    proc = await files_proc(args.pop("device", None), action, args, stdin=True)
+    try:
+        async for chunk in body_chunks(request):
+            proc.stdin.write(chunk)
+            await proc.stdin.drain()
+    except (ConnectionResetError, BrokenPipeError):
+        pass  # the sender went away (files.py sees the end, and keeps what arrived or nothing), or files.py stopped
+    out, err = await proc.communicate()
+    if proc.returncode:
+        return web.json_response({"error": files_error(err, proc.returncode)})
+    return web.json_response(json.loads(out))
 
 
 # --- projects and the brain (the hub) -------------------------------------------------------
@@ -334,6 +438,8 @@ async def digest(body):
             chunks += 1
             if t["done"]:
                 break
+        if written:
+            brain.record_save(key, len(written))
     return {"ok": True, "chunks": chunks, "notes": len(written), "written": written, "done": done}
 
 
@@ -704,6 +810,10 @@ def main():
     app.router.add_get("/agents", agents_list)
     app.router.add_get("/agents/options", agents_options)
     app.router.add_post("/agents/{action}", agents_action)
+    app.router.add_get("/files/{action:list|stat}", files_call)
+    app.router.add_post("/files/{action:mkdir|rename|delete}", files_call)
+    app.router.add_get("/files/{action:read|zip}", files_stream)
+    app.router.add_post("/files/write", files_write)
     app.router.add_get("/projects", projects_list)
     app.router.add_get("/projects/{name}", project_detail)
     app.router.add_post("/projects/{action:create|delete|rename|instructions}", projects_action)

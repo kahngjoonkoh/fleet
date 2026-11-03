@@ -4,7 +4,10 @@ there is no sign-up page, and only an admin can create accounts."""
 import asyncio
 import contextvars
 import copy
+import csv
 import hashlib
+import io
+import posixpath
 import json
 import os
 import re
@@ -12,7 +15,7 @@ import sqlite3
 import time
 from collections import defaultdict, deque
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import aiohttp
 import jinja2
@@ -37,6 +40,8 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self';
        "manifest-src 'self'; worker-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 # xterm.js styles its rows by inserting <style> elements, which need 'unsafe-inline' for styles only.
 TERM_CSP = CSP.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'")
+# Files: previews play video and audio and show PDFs in a frame, all from /files/raw.
+FILES_CSP = CSP.replace("img-src 'self'", "img-src 'self'; media-src 'self'; frame-src 'self'")
 
 templates = jinja2.Environment(loader=jinja2.FileSystemLoader(HERE / "templates"), autoescape=True)
 # Cloudflare's Email Obfuscation rewrites plain-text addresses into links that need its script, which the
@@ -124,7 +129,10 @@ async def security(request, handler):
         user = request["user"]
         if user is None:
             redirect("/login")
-        if request.method == "POST":
+        if request.method == "POST" and path == "/files/write":  # the body is the file itself
+            if request.headers.get("X-Fleet-CSRF") != user["csrf"]:
+                raise web.HTTPForbidden(text="Form expired. Reload the page and try again.")
+        elif request.method == "POST":
             form = await request.post()
             if form.get("csrf") != user["csrf"]:
                 raise web.HTTPForbidden(text="Form expired. Reload the page and try again.")
@@ -137,7 +145,7 @@ async def security(request, handler):
     if response.prepared:  # a websocket that has already closed
         return response
     response.headers.update({
-        "Content-Security-Policy": TERM_CSP if path == "/terminal" else CSP,
+        "Content-Security-Policy": TERM_CSP if path == "/terminal" else FILES_CSP if path == "/files/view" else CSP,
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "same-origin",
         "Cache-Control": cache_control(request),
@@ -173,8 +181,9 @@ def back(request, default="/"):
 # away, since they're where a tap goes next, so switching tabs shows a page that's already here.
 SPECULATION_RULES = json.dumps({"prefetch": [
     {"where": {"and": [{"href_matches": "/*"}, {"not": {"href_matches": "/terminal*"}}, {"not": {"href_matches": "/logout"}},
-                       {"not": {"href_matches": "/static/*"}}]}, "eagerness": "moderate"},
-    {"where": {"and": [{"selector_matches": ".bar nav a"}, {"not": {"href_matches": "/terminal*"}}]}, "eagerness": "eager"}]})
+                       {"not": {"href_matches": "/static/*"}}, {"not": {"href_matches": "/files/*"}}]}, "eagerness": "moderate"},
+    {"where": {"and": [{"selector_matches": ".bar nav a"}, {"not": {"href_matches": "/terminal*"}},
+                       {"not": {"href_matches": "/files*"}}]}, "eagerness": "eager"}]})
 
 
 async def speculation_rules(request):
@@ -292,6 +301,18 @@ async def digest_quiet_agents(app, agents, quiet_for):
             asyncio.create_task(run_digest(app, a["device"], a["name"]))
 
 
+def with_brain(app, agents):
+    """Adds what the card's Brain line shows: saving now, and when the next update falls due."""
+    now, quiet_for = time.time(), (sleep_after(app["db"]) or SLEEP_DEFAULT) * 60
+    for a in agents:
+        key, active = f"{a['device']}/{a['name']}", last_active(a)
+        a["brain_saving"] = key in app["digesting"]
+        due = app["last_digest"].get(key)  # the 2-hour update only runs while the agent isn't quiet
+        busy = a["state"] == "running" and active and now - active <= quiet_for
+        a["brain_next"] = max(0, int(due + BUSY_DIGEST - now)) if due and busy else None
+    return agents
+
+
 async def watch_idle(app):
     """Every minute: brain updates for agents that went quiet, then sleep for idle agents."""
     while True:
@@ -312,7 +333,7 @@ async def home(request, status=200, error=None):
         devices = (await fleetd_get("/agents"))["devices"]
     except (aiohttp.ClientError, OSError, TimeoutError, KeyError):
         devices, error = [], error or "fleetd isn't answering on this host."
-    agents = by_last_active([a | {"device": d["name"]} for d in devices for a in d.get("agents", [])])
+    agents = with_brain(request.app, by_last_active([a | {"device": d["name"]} for d in devices for a in d.get("agents", [])]))
     unreachable = [d for d in devices if "error" in d]
     return render(request, "home.html", status=status, tab="agents", agents=agents,
                   unreachable=unreachable, error=error, now=int(time.time()), sleep_after=sleep_after(request.app["db"]))
@@ -344,21 +365,28 @@ async def new_agent_page(request, status=200, error=None, form=None):
 async def create_agent(request):
     require_admin(request)
     form = await request.post()
-    values = {k: form.get(k, "").strip() for k in ("name", "device", "type", "folder", "command")}
+    values = {k: form.get(k, "").strip() for k in ("name", "device", "type", "folder", "command", "project", "new_project")}
     values["remote_control"] = "on" if form.get("remote_control") == "on" else "off"
+    project = values["new_project"] if values["project"] == "+new" else values["project"]
+    if values["project"] == "+new" and not PROJECT_NAME.match(project):
+        return await new_agent_page(request, 400, "Project names are 1-48 lowercase letters, digits or dashes.", values)
     if not AGENT_NAME.match(values["name"]):
         return await new_agent_page(request, 400, "Names are 1-32 letters, digits, dashes or underscores, "
                                     "starting with a letter or digit.", values)
     if not DEVICE_NAME.match(values["device"]):
         return await new_agent_page(request, 400, "Pick a device.", values)
     try:
-        result = await fleetd_post("/agents/create", {**values, "remote_control": values["remote_control"] == "on"})
+        agent = {k: values[k] for k in ("name", "device", "type", "folder", "command")}
+        result = await fleetd_post("/agents/create", {**agent, "remote_control": values["remote_control"] == "on"})
     except (aiohttp.ClientError, OSError, TimeoutError):
         result = {"error": "fleetd isn't answering on this host."}
     if "error" in result:
         return await new_agent_page(request, 400, f"{values['device']}: {result['error']}", values)
-    if PROJECT_NAME.match(form.get("project", "")):
-        await fleetd_post("/brain/home", {"device": values["device"], "agent": values["name"], "project": form["project"]})
+    if values["project"] == "+new":  # a project of that name already existing just means joining it
+        if "error" not in await fleetd_post("/projects/create", {"name": project}):
+            store.audit(request.app["db"], request["user"]["email"], "project-create", project, client_ip(request))
+    if PROJECT_NAME.match(project):
+        await fleetd_post("/brain/home", {"device": values["device"], "agent": values["name"], "project": project})
     store.audit(request.app["db"], request["user"]["email"], "agent-create",
                 f"{values['device']}/{values['name']} {values['type']}", client_ip(request))
     redirect("/")
@@ -417,6 +445,8 @@ async def agent_action(request):
     body = {"device": device, "name": name}
     if action in ("pin", "unpin"):
         action, body["pinned"] = "pin", action == "pin"
+    if action == "sleep":  # pressed by hand: pinned agents sleep too
+        body["force"] = True
     try:
         result = await fleetd_post(f"/agents/{action}", body)
     except (aiohttp.ClientError, OSError, TimeoutError):
@@ -425,6 +455,10 @@ async def agent_action(request):
         return await home(request, 400, f"{device}/{name}: {result['error']}")
     verb = ("pin" if body["pinned"] else "unpin") if "pinned" in body else action
     store.audit(request.app["db"], request["user"]["email"], "agent-" + verb, f"{device}/{name}", client_ip(request))
+    if action == "sleep":  # file what it said since the last brain update; its conversation outlives the process
+        agent = next((a for a in await all_agents() if a["device"] == device and a["name"] == name), None)
+        if agent and agent["type"] in BRAIN_TYPES:
+            asyncio.create_task(run_digest(request.app, device, name, force=True))
     redirect(back(request))
 
 
@@ -495,7 +529,7 @@ async def project_page(request, status=200, error=None, notice=None):
     brain_error = request.app.get("brain_error")
     return render(request, "project.html", status=status, tab="projects", p=data["project"],
                   overview=md.render(data["overview"], note_url), by_kind=by_kind, sessions=sessions[:12],
-                  graph=data["graph"], agents=agents, now=int(time.time()), sleep_after=sleep_after(request.app["db"]),
+                  graph=data["graph"], agents=with_brain(request.app, agents), now=int(time.time()), sleep_after=sleep_after(request.app["db"]),
                   error=error, notice=notice, brain_error=brain_error[1] if brain_error else None,
                   writer=(await writer_config())["mode"])
 
@@ -887,6 +921,288 @@ def terminal_target(request):
     return device, agent, tmux
 
 
+# --- Files tab: browse, preview, download, upload and edit files on any device ----------------
+
+TEXT_SHOWN = 1 << 20  # the viewer and editor show the first 1 MB of a text file
+CSV_ROWS = 500
+# Shown in the page (an <img>, <video>, <audio> or frame); anything else only downloads.
+INLINE = re.compile(r"^(image/(png|jpeg|gif|webp|avif|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon)|video/(mp4|webm|ogg|quicktime)"
+                    r"|audio/[\w.+-]+|application/pdf)$")
+RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+def files_target(request):
+    """(device, path) from ?device=&path=; device "" is the hub."""
+    device = request.query.get("device", "")
+    if device and not DEVICE_NAME.match(device):
+        raise web.HTTPNotFound()
+    return device, request.query.get("path") or "~"
+
+
+def files_url(view, device, path, **extra):
+    q = {"device": device, "path": path, **extra} if device else {"path": path, **extra}
+    return f"/files{'/' + view if view else ''}?{urlencode(q)}"
+
+
+templates.globals["files_url"] = files_url
+
+
+async def fleetd_files(endpoint, device, **params):
+    """A JSON files call to fleetd: GET for list/stat, else POST."""
+    params = {"device": device, **params} if device else params
+    try:
+        if endpoint in ("/files/list", "/files/stat"):
+            return await _fleetd_get(endpoint, params)
+        return await fleetd_post(endpoint, params)
+    except (aiohttp.ClientError, OSError, TimeoutError, ValueError):
+        return {"error": "fleetd isn't answering on this host."}
+
+
+async def fleetd_read(device, path, limit):
+    """The first `limit` bytes of a file."""
+    params = {"path": path, "limit": str(limit)} | ({"device": device} if device else {})
+    async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(FLEETD_SOCK),
+                                     timeout=aiohttp.ClientTimeout(total=60)) as session:
+        async with session.get("http://fleetd/files/read", params=params) as r:
+            if r.status != 200:
+                raise web.HTTPBadRequest(text=(await r.json()).get("error", "Can't read it."))
+            return await r.read()
+
+
+def crumbs(path):
+    """[(label, path)] for each folder on the way to `path` ("~/dev/fleet" or "/etc/ssh")."""
+    if path.startswith("~"):
+        out, cur = [("~", "~")], "~"
+        parts = path[2:].split("/") if len(path) > 1 else []
+    else:
+        out, cur = [("/", "/")], ""
+        parts = path.strip("/").split("/") if path.strip("/") else []
+    for part in parts:
+        cur = f"{cur}/{part}"
+        out.append((part, cur))
+    return out
+
+
+def parent_of(listing):
+    if listing["path"] == "/":
+        return None
+    if listing["path"] == "~":
+        return posixpath.dirname(listing["abs"])
+    return posixpath.dirname(listing["path"]) or "/"
+
+
+async def file_devices(app):
+    try:
+        return [d for d in await check_devices(app) if d["online"]]
+    except (aiohttp.ClientError, OSError, TimeoutError, KeyError):
+        return []
+
+
+async def files_page(request, status=200, error=None, device=None, path=None):
+    require_admin(request)
+    q_device, q_path = files_target(request)
+    device, path = (device if device is not None else q_device), (path or q_path)
+    hidden = request.query.get("hidden") == "1"
+    devices = await file_devices(request.app)
+    hub = next((d["name"] for d in devices if d["local"]), "")
+    listing = await fleetd_files("/files/list", device, path=path)
+    if "error" in listing:
+        error, listing = error or listing["error"], None
+        status = status if status != 200 else 404
+    entries = []
+    if listing:
+        entries = [e for e in listing["entries"] if hidden or not e["name"].startswith(".")]
+        for e in entries:
+            e["path"] = posixpath.join(listing["path"], e["name"])
+    return render(request, "files.html", status=status, tab="files", devices=devices, device=device,
+                  current=device or hub, path=listing["path"] if listing else path, listing=listing,
+                  entries=entries, hidden=hidden, hidden_count=sum(e["name"].startswith(".") for e in listing["entries"]) if listing else 0,
+                  crumbs=crumbs(listing["path"]) if listing else [], parent=parent_of(listing) if listing else None,
+                  error=error, now=int(time.time()))
+
+
+def preview_kind(st):
+    mime = st["mime"]
+    if INLINE.match(mime):
+        return mime.split("/")[0] if not mime.endswith("/pdf") else "pdf"
+    if st["text"]:
+        name = st["name"].lower()
+        if name.endswith((".md", ".markdown")):
+            return "markdown"
+        if name.endswith((".csv", ".tsv")):
+            return "csv"
+        return "text"
+    return None
+
+
+async def file_view(request):
+    require_admin(request)
+    device, path = files_target(request)
+    st = await fleetd_files("/files/stat", device, path=path)
+    if "error" in st:
+        return await files_page(request, 404, st["error"], device, posixpath.dirname(path) or "~")
+    if st["dir"]:
+        redirect(files_url("", device, st["path"]))
+    kind, text, rows, html = preview_kind(st), None, None, None
+    if kind in ("text", "markdown", "csv"):
+        text = (await fleetd_read(device, st["path"], TEXT_SHOWN)).decode("utf-8", errors="replace")
+        if kind == "markdown" and request.query.get("source") != "1":
+            html = md.render(text, lambda note_id: "#")
+        if kind == "csv":
+            delimiter = "\t" if st["name"].lower().endswith(".tsv") else ","
+            rows = list(row for _, row in zip(range(CSV_ROWS + 1), csv.reader(io.StringIO(text), delimiter=delimiter)))
+    return render(request, "file_view.html", tab="files", device=device, st=st, kind=kind, text=text, html=html,
+                  rows=rows, csv_rows=CSV_ROWS, truncated=st["size"] > TEXT_SHOWN, crumbs=crumbs(st["path"]),
+                  folder=posixpath.dirname(st["path"]) or "/", source=request.query.get("source") == "1",
+                  now=int(time.time()))
+
+
+async def file_edit(request):
+    require_admin(request)
+    device, path = files_target(request)
+    st = await fleetd_files("/files/stat", device, path=path)
+    if "error" in st:
+        return await files_page(request, 404, st["error"], device, posixpath.dirname(path) or "~")
+    if st["dir"] or not st["text"] or st["size"] > TEXT_SHOWN:
+        redirect(files_url("view", device, st["path"]))
+    text = (await fleetd_read(device, st["path"], TEXT_SHOWN)).decode("utf-8", errors="replace")
+    return render(request, "file_edit.html", tab="files", device=device, st=st, text=text, crumbs=crumbs(st["path"]))
+
+
+async def file_raw(request):
+    """The file's bytes. Shown in the page only for images, video, audio, PDFs and plain text; under a
+    sandbox, so a file can never run script as Fleet. Everything else, and ?dl=1, downloads."""
+    require_admin(request)
+    device, path = files_target(request)
+    st = await fleetd_files("/files/stat", device, path=path)
+    if "error" in st:
+        raise web.HTTPNotFound(text=st["error"])
+    if st["dir"]:
+        raise web.HTTPBadRequest(text="That's a folder; download it as a zip.")
+    download = request.query.get("dl") == "1"
+    inline = not download and (INLINE.match(st["mime"]) or st["text"])
+    ctype = ("text/plain; charset=utf-8" if st["text"] and not INLINE.match(st["mime"]) else st["mime"]) if inline \
+        else "application/octet-stream"
+    size, start, end, status = st["size"], 0, st["size"] - 1, 200
+    m = RANGE.match(request.headers.get("Range", ""))
+    if m and size and (m.group(1) or m.group(2)):  # video seeking
+        if m.group(1):
+            start, end = int(m.group(1)), min(int(m.group(2) or size - 1), size - 1)
+        else:
+            start, end = max(0, size - int(m.group(2))), size - 1
+        if start > end:
+            raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{size}"})
+        status = 206
+    headers = {
+        "Content-Type": ctype, "Content-Length": str(max(0, end - start + 1)), "Accept-Ranges": "bytes",
+        "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(st['name'])}",
+        "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin", "Cache-Control": "private, no-cache",
+        # A PDF needs the browser's own viewer, which a sandbox blocks; it can't run script as the page anyway.
+        "Content-Security-Policy": "frame-ancestors 'self'" if ctype == "application/pdf" else
+            "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'",
+    }
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    if download and start == 0:
+        store.audit(request.app["db"], request["user"]["email"], "file-download", f"{device or 'hub'}:{st['path']}", client_ip(request))
+    params = {"path": st["path"], "offset": str(start), "limit": str(end - start + 1)} | ({"device": device} if device else {})
+    return await relay_download(request, "/files/read", params, status, headers)
+
+
+async def file_zip(request):
+    require_admin(request)
+    device, path = files_target(request)
+    st = await fleetd_files("/files/stat", device, path=path)
+    if "error" in st or not st["dir"]:
+        raise web.HTTPNotFound(text=st.get("error", "That isn't a folder."))
+    name = (st["name"] if st["path"] != "~" else "home") + ".zip"
+    store.audit(request.app["db"], request["user"]["email"], "file-download", f"{device or 'hub'}:{st['path']}/ (zip)", client_ip(request))
+    headers = {"Content-Type": "application/zip", "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+               "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-cache"}
+    return await relay_download(request, "/files/zip", {"path": st["path"]} | ({"device": device} if device else {}), 200, headers)
+
+
+async def relay_download(request, path, params, status, headers):
+    session = aiohttp.ClientSession(connector=aiohttp.UnixConnector(FLEETD_SOCK), timeout=aiohttp.ClientTimeout(total=None))
+    try:
+        async with session.get("http://fleetd" + path, params=params) as r:
+            if r.status != 200:
+                raise web.HTTPBadRequest(text=(await r.json()).get("error", "Can't read it."))
+            response = web.StreamResponse(status=status, headers=headers)
+            await response.prepare(request)
+            async for chunk in r.content.iter_chunked(1 << 16):
+                await response.write(chunk)
+            await response.write_eof()
+            return response
+    finally:
+        await session.close()
+
+
+async def body_chunks(request):
+    """The request body as it arrives. aiohttp doesn't end the stream when the sender disappears
+    (the read would wait forever), so look for that while it's quiet."""
+    while True:
+        try:
+            chunk = await asyncio.wait_for(request.content.readany(), 2)
+        except asyncio.TimeoutError:
+            if request.transport is None or request.transport.is_closing():
+                raise ConnectionResetError("the sender went away")
+            continue
+        if not chunk:
+            return
+        yield chunk
+
+
+async def file_write(request):
+    """POST /files/write?device=&path=[&overwrite=1]: the request body becomes the file (saving in the
+    editor), or with upload=ID&step=&offset=&total=, one step of an upload sent in pieces (files.py's
+    upload). The csrf token comes in X-Fleet-CSRF, checked by the security middleware. 502 means try
+    again; 400 doesn't."""
+    require_admin(request)
+    device, path = files_target(request)
+    params = {"path": path} | ({"device": device} if device else {})
+    if request.query.get("overwrite") == "1":
+        params["overwrite"] = "1"
+    if request.query.get("mtime", "").isdigit():  # the editor: refuse if the file changed since it was opened
+        params["mtime"] = request.query["mtime"]
+    piece = "upload" in request.query
+    if piece:
+        params |= {k: request.query[k] for k in ("upload", "step", "offset", "total") if k in request.query}
+    elif request.content_length is not None:
+        params["size"] = str(request.content_length)
+    status = 400
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(FLEETD_SOCK),
+                                         timeout=aiohttp.ClientTimeout(total=None)) as session:
+            async with session.post("http://fleetd/files/write", params=params, data=body_chunks(request)) as r:
+                result = await r.json()
+    except (aiohttp.ClientError, OSError) as e:
+        result, status = {"error": f"fleetd: {e or type(e).__name__}"}, 502
+    if "error" not in result and (not piece or result.get("done")):
+        action = "file-edit" if params.get("overwrite") else "file-upload"
+        store.audit(request.app["db"], request["user"]["email"], action, f"{device or 'hub'}:{result['path']}", client_ip(request))
+    return web.json_response(result, status=status if "error" in result else 200)
+
+
+async def file_action(request):
+    """New folder, rename and delete, from forms on the Files pages."""
+    require_admin(request)
+    action, form = request.match_info["action"], await request.post()
+    device, path, name = form.get("device", ""), form.get("path", ""), form.get("name", "")
+    if device and not DEVICE_NAME.match(device):
+        raise web.HTTPNotFound()
+    result = await fleetd_files(f"/files/{action}", device, path=path, name=name)
+    if "error" in result:
+        return await files_page(request, 400, result["error"], device, path if action == "mkdir" else (posixpath.dirname(path) or "/"))
+    store.audit(request.app["db"], request["user"]["email"], f"file-{action}",
+                f"{device or 'hub'}:{path}{' -> ' + name if name else ''}", client_ip(request))
+    if action == "mkdir":
+        redirect(files_url("", device, path))
+    if action == "delete":
+        redirect(files_url("", device, result["parent"]))
+    redirect(files_url("view" if form.get("view") == "1" else "", device, result["path"]))
+
+
 async def terminal_page(request):
     require_admin(request)
     device, agent, tmux = terminal_target(request)
@@ -976,7 +1292,7 @@ def make_app():
     app.router.add_get("/", home)
     app.router.add_get("/agents/new", new_agent_page)
     app.router.add_post("/agents", create_agent)
-    app.router.add_post(r"/agents/{device}/{name}/{action:start|stop|remove|pin|unpin|wake}", agent_action)
+    app.router.add_post(r"/agents/{device}/{name}/{action:start|stop|remove|pin|unpin|wake|sleep}", agent_action)
     app.router.add_get("/settings", moved("/settings/account"))
     app.router.add_get("/account/password", moved("/settings/account"))
     app.router.add_get("/admin/users", moved("/settings/users"))
@@ -1001,6 +1317,13 @@ def make_app():
     app.router.add_get("/settings/brain", brain_settings_page)
     app.router.add_post("/settings/brain", save_brain_settings)
     app.router.add_get("/devices", devices_page)
+    app.router.add_get("/files", files_page)
+    app.router.add_get("/files/view", file_view)
+    app.router.add_get("/files/edit", file_edit)
+    app.router.add_get("/files/raw", file_raw)
+    app.router.add_get("/files/zip", file_zip)
+    app.router.add_post("/files/write", file_write)
+    app.router.add_post("/files/{action:mkdir|rename|delete}", file_action)
     app.router.add_get("/terminal", terminal_page)
     app.router.add_get("/terminal/ws", terminal_socket)
     app.router.add_get("/manifest.webmanifest", manifest)

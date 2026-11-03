@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS note_projects (note TEXT NOT NULL, project TEXT NOT N
 CREATE INDEX IF NOT EXISTS note_projects_project ON note_projects (project);
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5 (id UNINDEXED, title, body, tokenize = 'porter unicode61');
 -- how far each agent's conversation has been read ("device/name"), and the project each agent is in
-CREATE TABLE IF NOT EXISTS digests (agent TEXT PRIMARY KEY, offset INTEGER NOT NULL DEFAULT 0, last INTEGER);
+-- (last: when it was last read; saved and notes: when the last read that wrote notes ran, and how many)
+CREATE TABLE IF NOT EXISTS digests (agent TEXT PRIMARY KEY, offset INTEGER NOT NULL DEFAULT 0, last INTEGER,
+    saved INTEGER, notes INTEGER);
 CREATE TABLE IF NOT EXISTS homes (agent TEXT PRIMARY KEY, project TEXT NOT NULL);
 -- who writes the brain (Settings > Brain): mode, model, key, base_url
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -76,6 +78,8 @@ def db():
                               "CREATE TABLE projects (name TEXT PRIMARY KEY, created INTEGER NOT NULL);"
                               "INSERT INTO projects SELECT name, created FROM projects_old; DROP TABLE projects_old;")
         _db.executescript(SCHEMA)
+        if "saved" not in [r[1] for r in _db.execute("PRAGMA table_info(digests)")]:
+            _db.executescript("ALTER TABLE digests ADD COLUMN saved INTEGER; ALTER TABLE digests ADD COLUMN notes INTEGER;")
     return _db
 
 
@@ -399,8 +403,20 @@ def read_offset(agent):
 
 
 def save_offset(agent, offset):
-    db().execute("INSERT INTO digests VALUES (?, ?, ?) ON CONFLICT(agent) DO UPDATE SET offset = excluded.offset, "
-                 "last = excluded.last", (agent, offset, int(time.time())))
+    db().execute("INSERT INTO digests (agent, offset, last) VALUES (?, ?, ?) ON CONFLICT(agent) DO UPDATE SET "
+                 "offset = excluded.offset, last = excluded.last", (agent, offset, int(time.time())))
+
+
+def record_save(agent, notes):
+    """A read of this agent's conversation filed notes into the brain: when, and how many."""
+    db().execute("UPDATE digests SET saved = ?, notes = ? WHERE agent = ?", (int(time.time()), notes, agent))
+
+
+def saves():
+    """{"device/name": {"read", "saved", "notes"}}: when each agent's conversation was last read, and
+    when it last filed notes into the brain."""
+    return {r["agent"]: {"read": r["last"], "saved": r["saved"], "notes": r["notes"]}
+            for r in db().execute("SELECT agent, last, saved, notes FROM digests")}
 
 
 # --- search and graph -------------------------------------------------------------------

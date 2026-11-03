@@ -25,8 +25,8 @@ async def main():
         body = await (await s.get(B + "/agents/new", headers=H)).text()
         existing = [p["name"] for p in (await fleetd("/projects"))["projects"]]
         chips = re.findall(r'name="project" value="([^"]*)"', body)
-        ok("Project choices: None, then every project", chips == [""] + existing, chips)
-        ok("New project link only when there are none", ('href="/projects/new"' in body) == (not existing))
+        ok("Project choices: None, every project, then + New project", chips == [""] + existing + ["+new"], chips)
+        ok("New project name field", 'name="new_project"' in body)
         r = await post("/agents", {"name": "fleet-test-none", "device": REMOTE, "type": "shell", "folder": "~/.cache/fleet-test-pf", "project": ""})
         ok("create -> back to Agents", r.status == 303 and r.headers["Location"] == "/", r.headers.get("Location"))
         ok("None means no project", await project_of("fleet-test-none") is None)
@@ -39,6 +39,22 @@ async def main():
         ok("New agent here pre-selects the project", re.search(r'value="fleet-test-pf"\s+checked', body) is not None)
         body = await (await s.get(B + "/agents/new", headers=H)).text()
         ok("otherwise None is pre-selected", re.search(r'name="project" value=""\s+checked', body) is not None)
+
+        r = await post("/agents", {"name": "fleet-test-np", "device": REMOTE, "type": "shell", "folder": "~/.cache/fleet-test-pf2",
+                                   "project": "+new", "new_project": "Bad Name"})
+        body = await r.text()
+        ok("+ New project: a bad name is refused, form kept", r.status == 400 and "lowercase" in body
+           and re.search(r'value="\+new"\s+checked', body) and 'value="Bad Name"' in body, r.status)
+        ok("... and no agent made", await project_of("fleet-test-np") is None and
+           not any(a["name"] == "fleet-test-np" for d in (await fleetd("/agents"))["devices"] for a in d.get("agents", [])))
+        r = await post("/agents", {"name": "fleet-test-np", "device": REMOTE, "type": "shell", "folder": "~/.cache/fleet-test-pf2",
+                                   "project": "+new", "new_project": "fleet-test-np"})
+        names = [p["name"] for p in (await fleetd("/projects"))["projects"]]
+        ok("+ New project creates it and puts the agent in it", r.status == 303 and "fleet-test-np" in names
+           and await project_of("fleet-test-np") == "fleet-test-np", r.status)
+        r = await post("/agents", {"name": "fleet-test-np2", "device": REMOTE, "type": "shell", "folder": "~/.cache/fleet-test-pf2",
+                                   "project": "+new", "new_project": "fleet-test-np"})
+        ok("+ New project with an existing name joins it", r.status == 303 and await project_of("fleet-test-np2") == "fleet-test-np")
 
 
 try:

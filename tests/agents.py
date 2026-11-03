@@ -68,8 +68,11 @@ async def main():
         ok("folder suggestions present", "<datalist" in body and "~/dev/fleet" in body)
         r = await post("/agents", {"name": "bad name!", "device": REMOTE, "type": "shell", "folder": "~"})
         ok("bad name refused", r.status == 400, r.status)
-        r = await post("/agents", {"name": "fleet-test-x", "device": REMOTE, "type": "shell", "folder": "~/no-such-folder-zz"})
-        ok("missing folder refused", r.status == 400 and "no folder" in await r.text(), r.status)
+        r = await post("/agents", {"name": "fleet-test-mk", "device": REMOTE, "type": "shell", "folder": "~/.cache/fleet-test-mk/new/sub"})
+        ok("a missing folder is made", r.status == 303 and ((await agent("fleet-test-mk", REMOTE)) or {}).get("folder") == "~/.cache/fleet-test-mk/new/sub", r.status)
+        await post(f"/agents/{REMOTE}/fleet-test-mk/stop", {}); await post(f"/agents/{REMOTE}/fleet-test-mk/remove", {})
+        r = await post("/agents", {"name": "fleet-test-x", "device": REMOTE, "type": "shell", "folder": "~/.bashrc"})
+        ok("a file isn't a folder", r.status == 400 and "is a file" in await r.text(), r.status)
         r = await post("/agents", {"name": "fleet-test-x", "device": REMOTE, "type": "custom", "folder": "~"})
         ok("custom without command refused", r.status == 400, r.status)
         for device in (REMOTE, hub):

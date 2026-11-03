@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ st.name }} · Files · Fleet{% endblock %}
+{% block content %}
+<div class="files-head">
+  <nav class="crumbs" aria-label="Folder">
+    {% if device %}<span class="pill">{{ device }}</span>{% endif %}
+    {% for label, p in crumbs %}{% if not loop.first and p != "/" %}<span class="sep">/</span>{% endif %}{% if loop.last %}<strong>{{ label }}</strong>{% else %}<a href="{{ files_url('', device, p) }}">{{ label }}</a>{% endif %}{% endfor %}
+  </nav>
+</div>
+<div class="files-tools">
+  <a class="button primary small-btn" href="{{ files_url('raw', device, st.path, dl='1') }}" download>Download</a>
+  {% if st.text and not truncated %}<a class="button small-btn" href="{{ files_url('edit', device, st.path) }}">Edit</a>{% endif %}
+  {% if kind == "markdown" %}<a class="button small-btn" href="{% if source %}{{ files_url('view', device, st.path) }}{% else %}{{ files_url('view', device, st.path, source='1') }}{% endif %}">{{ "Rendered" if source else "Source" }}</a>{% endif %}
+  {% if kind in ("image", "pdf", "video", "audio", "text") %}<a class="button small-btn" href="{{ files_url('raw', device, st.path) }}" target="_blank" rel="noopener">Open</a>{% endif %}
+  <details class="menu files-more">
+    <summary aria-label="More">⋯</summary>
+    <div class="menu-panel">
+      <form method="post" action="/files/rename" class="menu-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="device" value="{{ device }}">
+        <input type="hidden" name="path" value="{{ st.path }}"><input type="hidden" name="view" value="1">
+        <input type="text" name="name" value="{{ st.name }}" required aria-label="New name" autocapitalize="off" autocomplete="off" spellcheck="false">
+        <button>Rename</button>
+      </form>
+      <form method="post" action="/files/delete" data-confirm="Delete {{ st.path }}? This can't be undone.">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="device" value="{{ device }}">
+        <input type="hidden" name="path" value="{{ st.path }}">
+        <button class="danger-text">Delete</button>
+      </form>
+    </div>
+  </details>
+</div>
+<p class="muted small file-facts">{{ st.size | size }} · changed {{ (now - st.mtime) | duration if now - st.mtime >= 60 else "just now" }}{% if now - st.mtime >= 60 %} ago{% endif %}{% if st.mime %} · {{ st.mime }}{% endif %}</p>
+{% if truncated and text is not none %}<p class="notice small">Showing the first 1 MB. Download it for the rest.</p>{% endif %}
+<div class="preview">
+{% if kind == "image" %}
+  <img src="{{ files_url('raw', device, st.path) }}" alt="{{ st.name }}">
+{% elif kind == "video" %}
+  <video src="{{ files_url('raw', device, st.path) }}" controls playsinline preload="metadata"></video>
+{% elif kind == "audio" %}
+  <audio src="{{ files_url('raw', device, st.path) }}" controls preload="metadata"></audio>
+{% elif kind == "pdf" %}
+  <iframe src="{{ files_url('raw', device, st.path) }}" title="{{ st.name }}"></iframe>
+  <p class="muted small">If it doesn't show here (phones often don't), use Open or Download.</p>
+{% elif kind == "markdown" and html %}
+  <section class="card prose file-md">{{ html }}</section>
+{% elif kind == "csv" %}
+  <div class="table-wrap"><table>{% for row in rows[:csv_rows] %}{% set head = loop.first %}<tr>{% for cell in row %}{% if head %}<th>{{ cell }}</th>{% else %}<td>{{ cell }}</td>{% endif %}{% endfor %}</tr>{% endfor %}</table></div>
+  {% if rows | length > csv_rows %}<p class="muted small">The first {{ csv_rows }} rows.</p>{% endif %}
+{% elif text is not none %}
+  <pre class="file-text">{{ text }}</pre>
+{% else %}
+  <p class="muted">No preview for this kind of file. Download it to open it.</p>
+{% endif %}
+</div>
+{% endblock %}

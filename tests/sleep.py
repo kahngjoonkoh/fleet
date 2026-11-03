@@ -63,7 +63,7 @@ async def main():
         r = await s.get(B + "/agents/new", headers=H); body = await r.text()
         ok("form: no pin option or hint text", 'name="pinned"' not in body and 'class="hint"' not in body and 'name="boot"' not in body)
 
-        r = await post("/agents", {"name": "fleet-test-l", "device": REMOTE, "type": "claude", "folder": "~"})
+        r = await post("/agents", {"name": "fleet-test-l", "device": REMOTE, "type": "claude", "folder": "~/.cache/fleet-test-l"})
         ok("create Claude agent", r.status == 303, r.status)
         a = await agent("fleet-test-l")
         ok("running, lazy, not pinned", a and a["state"] == "running" and a["lazy"] and not a["pinned"], a)
@@ -76,7 +76,16 @@ async def main():
         r = await fleetd("/agents/sleep", {"device": REMOTE, "name": "fleet-test-l"})
         ok("a pinned agent refuses to sleep", "error" in r, r)
         r = await s.get(B + "/", headers=H); body = await r.text()
-        ok("card: filled pin, Unpin, never sleeps", 'class="pin on"' in body and 'aria-pressed="true"' in body and "Never; pinned" in body)
+        ok("card: filled pin, Unpin, sleeps only by hand", 'class="pin on"' in body and 'aria-pressed="true"' in body
+           and "Only when you press Sleep; pinned" in body)
+        ok("card: Sleep button on a running agent", f"/agents/{REMOTE}/fleet-test-l/sleep" in body)
+        r = await post(f"/agents/{REMOTE}/fleet-test-l/sleep", {})
+        a = await agent("fleet-test-l")
+        ok("Sleep button puts even a pinned agent to sleep", r.status == 303 and a["state"] == "asleep" and a["pinned"], a)
+        n = db.execute("SELECT count(*) FROM audit WHERE actor = ? AND action = 'agent-sleep'", (ADMIN,)).fetchone()[0]
+        ok("manual sleep audited", n == 1, n)
+        await post(f"/agents/{REMOTE}/fleet-test-l/wake", {})
+        ok("woken again", (await agent("fleet-test-l"))["state"] == "running")
         await post(f"/agents/{REMOTE}/fleet-test-l/unpin", {})
         ok("unpin", not (await agent("fleet-test-l"))["pinned"])
 
@@ -95,7 +104,7 @@ async def main():
            and "Wakes when opened" in body and "agent=fleet-test-l" in body)
         ok("card: last active, no idle minutes", "Last active" in body and ">Idle" not in body)
 
-        got, tail = await open_agent(s, H, "fleet-test-l", "trust")
+        got, tail = await open_agent(s, H, "fleet-test-l", "Claude Code")  # no trust prompt: Fleet trusts agent folders
         a = await agent("fleet-test-l")
         ok("opening wakes it and shows Claude", got and a["state"] == "running", (tail, a))
 
@@ -113,6 +122,8 @@ async def main():
         r = await fleetd("/agents/sleep", {"device": REMOTE, "name": "fleet-test-sh"})
         a = await agent("fleet-test-sh")
         ok("a shell never sleeps", "error" in r and not a["lazy"], r)
+        r = await post(f"/agents/{REMOTE}/fleet-test-sh/sleep", {})
+        ok("... not even by hand", r.status == 400 and (await agent("fleet-test-sh"))["state"] == "running", r.status)
         r = await s.get(B + "/", headers=H); body = await r.text()
         ok("shell card: never, can't resume", "Never; it can&#39;t resume" in body or "Never; it can't resume" in body)
 

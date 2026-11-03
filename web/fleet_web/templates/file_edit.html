@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ st.name }} · Files · Fleet{% endblock %}
+{% block head %}<script src="{{ static('files.js') }}" defer></script>{% endblock %}
+{% block content %}
+<div class="files-head">
+  <nav class="crumbs" aria-label="Folder">
+    {% if device %}<span class="pill">{{ device }}</span>{% endif %}
+    {% for label, p in crumbs %}{% if not loop.first and p != "/" %}<span class="sep">/</span>{% endif %}{% if loop.last %}<strong>{{ label }}</strong>{% else %}<a href="{{ files_url('', device, p) }}">{{ label }}</a>{% endif %}{% endfor %}
+  </nav>
+</div>
+<form id="editor" class="editor" data-device="{{ device }}" data-path="{{ st.path }}" data-csrf="{{ csrf }}"
+  data-view="{{ files_url('view', device, st.path) }}" data-mtime="{{ st.mtime }}">
+  <textarea name="text" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off">
+{{ text }}</textarea>
+  <div class="files-tools">
+    <button class="primary small-btn" id="save">Save</button>
+    <a class="button small-btn" href="{{ files_url('view', device, st.path) }}">Cancel</a>
+    <label class="check small"><input type="checkbox" id="wrap"> Wrap lines</label>
+    <span class="muted small" id="save-status" role="status"></span>
+  </div>
+</form>
+<noscript><p class="error">Saving needs JavaScript.</p></noscript>
+{% endblock %}

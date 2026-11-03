@@ -46,9 +46,13 @@
     <div class="chips" id="projects">
       <label class="chip"><input type="radio" name="project" value=""{% if not form.project %} checked{% endif %}><span>None</span></label>
       {% for p in projects %}<label class="chip"><input type="radio" name="project" value="{{ p.name }}"{% if form.project == p.name %} checked{% endif %}><span>{{ p.name }}</span></label>{% endfor %}
-      {% if not projects %}<a class="small chip-link" href="/projects/new">New project</a>{% endif %}
+      <label class="chip"><input type="radio" name="project" value="+new"{% if form.project == "+new" %} checked{% endif %}><span>+ New project</span></label>
     </div>
   </fieldset>
+  <label id="new-project-field">New project name
+    <input type="text" name="new_project" value="{{ form.new_project }}" maxlength="48" pattern="[a-z0-9][a-z0-9\-]{0,47}"
+      autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="e.g. fleet">
+  </label>
   {% for d in devices %}{% if not d.linger %}
   <p class="notice small linger" data-device="{{ d.name }}">On {{ d.name }}, agents stop when you log out until you run
     <code>sudo loginctl enable-linger {{ d.user }}</code> there once.</p>

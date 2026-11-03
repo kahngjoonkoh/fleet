@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% from "macros.html" import file_icon %}
+{% block title %}{{ path }} · {{ current }} · Files · Fleet{% endblock %}
+{% block head %}<script src="{{ static('files.js') }}" defer></script>{% endblock %}
+{% block content %}
+<div class="files-head">
+  <details class="menu files-device">
+    <summary aria-label="Switch device"><strong>{{ current }}</strong>
+      <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></summary>
+    <div class="menu-panel">
+      <p class="menu-head">Device</p>
+      {% for d in devices %}
+      <a href="{{ files_url('', '' if d.local else d.name, '~') }}"{% if d.name == current %} aria-current="true"{% endif %}>{{ d.name }}{% if d.local %} <span class="muted">· Hub</span>{% endif %}</a>
+      {% endfor %}
+    </div>
+  </details>
+  <nav class="crumbs" aria-label="Folder">
+    {% for label, p in crumbs %}{% if not loop.first and p != "/" %}<span class="sep">/</span>{% endif %}{% if loop.last %}<strong>{{ label }}</strong>{% else %}<a href="{{ files_url('', device, p) }}">{{ label }}</a>{% endif %}{% endfor %}
+  </nav>
+</div>
+{% if error %}<p class="error" role="alert">{{ error }}{% if not listing %} <a href="{{ files_url('', device, '~') }}">Go to ~</a>{% endif %}</p>{% endif %}
+{% if listing %}
+<div class="files-tools">
+  <label class="button primary small-btn" id="upload-label">Upload<input type="file" id="upload" multiple hidden
+    data-device="{{ device }}" data-path="{{ path }}" data-csrf="{{ csrf }}"></label>
+  <details class="inline-form">
+    <summary class="button small-btn">New folder</summary>
+    <form method="post" action="/files/mkdir">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="device" value="{{ device }}">
+      <input type="hidden" name="path" value="{{ path }}">
+      <input type="text" name="name" required placeholder="Folder name" autocapitalize="off" autocomplete="off" spellcheck="false">
+      <button class="primary small-btn">Create</button>
+    </form>
+  </details>
+  <a class="button small-btn" href="{{ files_url('zip', device, path) }}" download>Download .zip</a>
+  <details class="menu files-more">
+    <summary aria-label="More">⋯</summary>
+    <div class="menu-panel">
+      <a href="{{ files_url('', device, path, hidden='' if hidden else '1') }}">{{ "Hide" if hidden else "Show" }} hidden files{% if hidden_count %} ({{ hidden_count }}){% endif %}</a>
+      {% if parent is not none %}
+      <form method="post" action="/files/rename" class="menu-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="device" value="{{ device }}">
+        <input type="hidden" name="path" value="{{ path }}">
+        <input type="text" name="name" value="{{ crumbs[-1][0] }}" required aria-label="New name" autocapitalize="off" autocomplete="off" spellcheck="false">
+        <button>Rename folder</button>
+      </form>
+      <form method="post" action="/files/delete" data-confirm="Delete the folder {{ path }} and everything in it? This can't be undone.">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="device" value="{{ device }}">
+        <input type="hidden" name="path" value="{{ path }}">
+        <button class="danger-text">Delete folder</button>
+      </form>
+      {% endif %}
+    </div>
+  </details>
+</div>
+<div id="uploads" class="uploads" hidden></div>
+<ul class="files" id="files">
+  {% if parent is not none %}
+  <li><a class="file-row" href="{{ files_url('', device, parent) }}">{{ file_icon("up") }}<span class="fname">..</span></a></li>
+  {% endif %}
+  {% for e in entries %}
+  <li>
+    <a class="file-row{{ ' broken' if e.broken }}" href="{{ files_url('' if e.dir else 'view', device, e.path) }}">
+      {{ file_icon("dir" if e.dir else "file") }}
+      <span class="fname">{{ e.name }}{% if e.link %} <span class="muted">↗</span>{% endif %}</span>
+      <span class="fmeta">{% if not e.dir and e.size is not none %}{{ e.size | size }}{% endif %}{% if e.mtime %}<span>{{ (now - e.mtime) | duration if now - e.mtime >= 60 else "now" }}</span>{% endif %}</span>
+    </a>
+    {% if not e.dir and not e.broken %}<a class="file-dl" href="{{ files_url('raw', device, e.path, dl='1') }}" download aria-label="Download {{ e.name }}" title="Download">{{ file_icon("download") }}</a>{% endif %}
+  </li>
+  {% else %}
+  <li class="muted files-empty">{% if hidden_count and not hidden %}Only hidden files here. <a href="{{ files_url('', device, path, hidden='1') }}">Show them</a>{% else %}This folder is empty.{% endif %}</li>
+  {% endfor %}
+</ul>
+{% if listing.more %}<p class="muted small">{{ listing.more }} more not shown.</p>{% endif %}
+<p class="muted small files-note">Drop files on this page to upload them here. Any size: if the connection drops, it retries, and uploading the same file again continues where it stopped.</p>
+{% endif %}
+{% endblock %}

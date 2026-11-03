@@ -60,6 +60,17 @@ Idle agents (no output and no typing for 30 minutes, set in Settings → Agents)
 free their memory and wake when opened. Only agents that can resume their conversation sleep; pin
 one to keep it awake.
 
+## Files
+
+The Files tab (admins only) browses every device's files, and each agent card opens its folder there:
+preview images, video, audio, PDFs, Markdown, CSV and text, edit text files, download a file or a folder
+as a zip, upload, and make, rename or delete folders. Every change and download goes in the audit log.
+
+Nothing extra runs on the devices: each action is a short standard-library Python script over the
+ssh connection Fleet already uses. Uploads go in 32 MB pieces, so a tunnel's limit on request size
+doesn't limit the file. A dropped connection is retried, and uploading the same file again within 3
+days continues it.
+
 ## Projects and the brain
 
 The brain is one database of small linked notes shared by every project: decisions and what they

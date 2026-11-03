@@ -267,6 +267,30 @@ def _int(s):
     return int(s) if s and s.isdigit() else None
 
 
+def _trust(record):
+    """Claude Code asks whether to trust a folder the first time it starts there, and waits for an
+    answer; an agent reached through Remote Control, with nobody at its screen, would wait forever.
+    So Fleet answers yes for its agents' folders, the way Claude Code records it: hasTrustDialogAccepted
+    on the folder in ~/.claude.json. It writes only when that's missing."""
+    if record["type"] != "claude":
+        return
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = os.path.join(base, ".claude.json") if base else os.path.expanduser("~/.claude.json")
+    folder = os.path.realpath(os.path.expanduser(record["folder"]))
+    try:
+        with open(path) as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        config = {}
+    except (OSError, ValueError):
+        return  # unreadable, or Claude Code is writing it: next time
+    project = config.setdefault("projects", {}).setdefault(folder, {})
+    if project.get("hasTrustDialogAccepted") is True:
+        return
+    project["hasTrustDialogAccepted"] = True
+    _write(path, json.dumps(config, indent=2) + "\n")
+
+
 def _refresh_script(record):
     """Keeps NAME.sh in step with how Fleet starts agents now. It's otherwise written only when an agent
     is created, woken or changed, so a pinned agent that never sleeps would start the old way at boot."""
@@ -287,6 +311,7 @@ def list_agents(_args=None):
     agents = []
     for r in records:
         _refresh_script(r)
+        _trust(r)
         u = units.get(r["name"], {})
         pid = _int(u.get("MainPID"))
         active = u.get("ActiveState") == "active" and pid
@@ -408,8 +433,8 @@ def create(args):
     if kind not in TYPES:
         raise Problem("Pick an agent type.")
     folder = os.path.abspath(os.path.expanduser((args.get("folder") or "~").strip()))
-    if not os.path.isdir(folder):
-        raise Problem(f"There's no folder {_home(folder)} on this machine.")
+    if os.path.exists(folder) and not os.path.isdir(folder):
+        raise Problem(f"{_home(folder)} is a file, not a folder.")
     t = TYPES[kind]
     if kind == "custom":
         command = (args.get("command") or "").strip()
@@ -427,6 +452,11 @@ def create(args):
     path = os.path.join(DIR, name + ".json")
     if os.path.exists(path):
         raise Problem(f"There's already an agent called {name} here.")
+    made = not os.path.exists(folder)  # a new folder for a new agent: made here, removed again if it fails
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError as e:
+        raise Problem(f"Couldn't make the folder {_home(folder)}: {e.strerror}.")
     record = {"name": name, "type": kind, "folder": folder, "start": start, "resume": resume,
               "created": int(time.time()), "pinned": bool(args.get("pinned")),
               "remote_control": bool(args.get("remote_control")) and t.get("rc", False)}
@@ -436,11 +466,17 @@ def create(args):
         record["session"] = aid  # the agent's conversation, for the project brain to read
     _write(path, json.dumps(record, indent=2) + "\n")
     _write(os.path.join(DIR, name + ".sh"), _script(record), 0o700)
+    _trust(record)
     try:
         _systemctl("enable", "--now", "--quiet", f"fleet-agent@{name}.service")
     except Problem:
         _remove_files(name)
         _run("systemctl", "--user", "disable", "--quiet", f"fleet-agent@{name}.service")
+        if made:
+            try:
+                os.removedirs(folder)  # only the empty folders it made
+            except OSError:
+                pass
         raise
     return {"ok": True}
 
@@ -472,6 +508,7 @@ def _is_active(name):
 def _awake(name):
     """Running, and back after a reboot. Restart, because an exited agent's unit is still active."""
     _setup()
+    _trust(_load(name))
     _write(_path(name, ".sh"), _script(_load(name)), 0o700)
     try:
         os.unlink(_path(name, ".asleep"))
@@ -497,11 +534,14 @@ def stop(args):
 
 
 def sleep(args):
-    """Stops an idle agent to free its memory; it stays disabled until opened, so a reboot doesn't wake it."""
+    """Stops an idle agent to free its memory; it stays disabled until opened, so a reboot doesn't wake it.
+    "force" (someone pressed Sleep) puts a pinned agent to sleep too; pinning only keeps idle sleep away."""
     name = _record(args)
     record = _load(name)
-    if record.get("pinned") or not TYPES.get(record["type"], {}).get("lazy"):
-        raise Problem(f"{name} is pinned or can't resume, so it doesn't sleep.")
+    if not TYPES.get(record["type"], {}).get("lazy"):
+        raise Problem(f"{name} can't resume, so it doesn't sleep.")
+    if record.get("pinned") and not args.get("force"):
+        raise Problem(f"{name} is pinned, so it doesn't sleep.")
     _write(_path(name, ".asleep"), "")
     _systemctl("disable", "--now", "--quiet", _unit(name))
     return {"ok": True}

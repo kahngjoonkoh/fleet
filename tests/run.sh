@@ -12,7 +12,7 @@ set -u
 cd "$(dirname "$0")"
 REMOTE=${FLEET_TEST_REMOTE:-e4}
 HUB=$(hostname)
-FREE="agents sleep terminal speed_and_rename projects project_field"
+FREE="agents sleep terminal speed_and_rename projects project_field files"
 paid=""; tests=""
 for a in "$@"; do [ "$a" = "--paid" ] && paid=brain_paid || tests="$tests $a"; done
 [ -n "$tests" ] || tests="$FREE"
@@ -20,14 +20,16 @@ tests="$tests $paid"
 
 # Folders the tests start agents in, on both machines; removed again at the end, with the Claude
 # Code conversations agents had in them.
-REMOTE_DIRS="fleet-test-a fleet-test-rn fleet-test-mf fleet-test-pf fleet-test-pf2"
-HUB_DIRS="fleet-test-mf-hub"
+REMOTE_DIRS="fleet-test-a fleet-test-rn fleet-test-mf fleet-test-pf fleet-test-pf2 fleet-test-l fleet-test-mk fleet-test-files"
+HUB_DIRS="fleet-test-mf-hub fleet-test-files"
 dirs() { # create|remove
   if [ "$1" = create ]; then
     ssh "$REMOTE" "cd ~/.cache && mkdir -p $REMOTE_DIRS" && (cd ~/.cache && mkdir -p $HUB_DIRS)
   else
     ssh "$REMOTE" "cd ~/.cache && rm -rf $REMOTE_DIRS; cd ~/.claude/projects 2>/dev/null && rm -rf -- -home-*--cache-fleet-test-*"
     (cd ~/.cache && rm -rf $HUB_DIRS); (cd ~/.claude/projects 2>/dev/null && rm -rf -- -home-*--cache-fleet-test-*)
+    # Fleet marks Claude agents' folders trusted in ~/.claude.json; drop the test folders' entries.
+    ssh "$REMOTE" python3 - < untrust.py; python3 - < untrust.py
   fi
 }
 in_web() { docker exec -i -e FLEET_TEST_REMOTE="$REMOTE" -e FLEET_TEST_HUB="$HUB" fleet-web python - < "$1"; }

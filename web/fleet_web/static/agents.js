@@ -30,16 +30,35 @@ if (form) {
     form.elements.command.required = type === "custom";
   }
 
-  name.addEventListener("input", () => { named = name.value !== ""; });
+  // "+ New project": its name follows the agent's name until you type one.
+  const newProject = form.elements.new_project;
+  let projectNamed = !!(newProject && newProject.value);
+  const suggestProject = () => {
+    if (newProject && !projectNamed)
+      newProject.value = name.value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+/, "").slice(0, 48);
+  };
+  const projectChoice = () => {
+    if (!newProject) return;
+    newProject.required = checked("project")?.value === "+new";
+    suggestProject();
+  };
+  if (newProject) newProject.addEventListener("input", () => { projectNamed = newProject.value !== ""; });
+
+  name.addEventListener("input", () => { named = name.value !== ""; suggestProject(); });
   folder.addEventListener("input", () => {
     if (named) return;
     const base = folder.value.replace(/\/+$/, "").split("/").pop();
     let suggestion = base.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^[-_]+/, "").slice(0, 32);
     if (name.pattern.startsWith("[a-z0-9]")) suggestion = suggestion.toLowerCase().replace(/_/g, "-");  // project names
     name.value = suggestion;
+    suggestProject();
   });
-  form.addEventListener("change", (e) => { if (e.target.name === "device" || e.target.name === "type") update(); });
+  form.addEventListener("change", (e) => {
+    if (e.target.name === "device" || e.target.name === "type") update();
+    if (e.target.name === "project") projectChoice();
+  });
   update();
+  projectChoice();
 
   // --- folder suggestions -----------------------------------------------------
   const list = document.createElement("ul");
