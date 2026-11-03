@@ -27,6 +27,12 @@ function draw(svg) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const edges = data.edges.map((e) => ({ ...e, s: byId.get(e.source), t: byId.get(e.target) })).filter((e) => e.s && e.t);
   for (const e of edges) { e.s.degree++; e.t.degree++; }
+  // A link pulls less the busier its ends are, and moves the busier end less. With a fixed pull, a
+  // note with many links gets pulled back too far on every tick, and the layout flies apart.
+  for (const e of edges) {
+    e.pull = 0.12 / Math.min(e.s.degree, e.t.degree);
+    e.share = e.s.degree / (e.s.degree + e.t.degree);
+  }
   const neighbours = new Map(nodes.map((n) => [n, new Set([n])]));
   for (const e of edges) { neighbours.get(e.s).add(e.t); neighbours.get(e.t).add(e.s); }
   // Sessions link to everything they touched, which knots the graph, so they start hidden.
@@ -80,7 +86,7 @@ function draw(svg) {
 
   // --- layout -----------------------------------------------------------------------
   let alpha = 1, frame = null;
-  const LINK = 95, CHARGE = 2600;
+  const LINK = 95, CHARGE = 2600, MAX_SPEED = 40;
   function tick() {
     const live = nodes.filter((n) => !hidden.has(n.kind));
     for (let a = 0; a < live.length; a++) {
@@ -97,12 +103,15 @@ function draw(svg) {
     for (const e of edges) {
       if (hidden.has(e.s.kind) || hidden.has(e.t.kind)) continue;
       const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const f = ((d - LINK) / d) * 0.06 * alpha;
-      e.s.vx += dx * f; e.s.vy += dy * f; e.t.vx -= dx * f; e.t.vy -= dy * f;
+      const f = ((d - LINK) / d) * e.pull * alpha;
+      e.s.vx += dx * f * (1 - e.share); e.s.vy += dy * f * (1 - e.share);
+      e.t.vx -= dx * f * e.share; e.t.vy -= dy * f * e.share;
     }
     for (const n of live) {
       n.vx -= n.x * 0.01 * alpha; n.vy -= n.y * 0.01 * alpha;  // gently toward the middle
       if (n === dragging) { n.vx = n.vy = 0; continue; }
+      const speed = Math.hypot(n.vx, n.vy);  // two dots nearly on top of each other push very hard
+      if (speed > MAX_SPEED) { n.vx *= MAX_SPEED / speed; n.vy *= MAX_SPEED / speed; }
       n.x += n.vx; n.y += n.vy;
       n.vx *= 0.6; n.vy *= 0.6;
     }
@@ -218,9 +227,11 @@ function draw(svg) {
   for (const n of nodes) n.g.classList.toggle("gone", hidden.has(n.kind));
   for (const e of edges) e.line.classList.toggle("gone", hidden.has(e.s.kind) || hidden.has(e.t.kind));
   // Settle the layout before the first paint, so the graph appears in place rather than unfolding;
-  // after that it only moves when you drag or hide something.
-  const settle = nodes.length < 150 ? 300 : nodes.length < 400 ? 120 : 40;
-  for (let i = 0; i < settle && alpha > 0.01; i++) tick();
+  // after that it only moves when you drag or hide something. A slow phone that runs out of time
+  // watches the last of it settle instead of waiting on a frozen page.
+  const deadline = performance.now() + 400;
+  while (alpha > 0.01 && performance.now() < deadline) tick();
   fit();
+  if (alpha > 0.01) heat(alpha);
   new ResizeObserver(() => fit()).observe(svg);
 }
