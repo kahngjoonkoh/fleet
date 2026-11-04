@@ -260,7 +260,7 @@ WRITER_MODES = ("subscription", "anthropic", "openai")
 
 
 async def writer_config():
-    """Who writes the brain; fleetd keeps it, so a /fleet-save from any machine uses the same."""
+    """Who writes the brain; fleetd keeps it, so a /fleet-push from any machine uses the same."""
     return await fleetd_get("/brain/writer")
 
 
@@ -335,6 +335,13 @@ async def home(request, status=200, error=None):
         devices, error = [], error or "fleetd isn't answering on this host."
     agents = with_brain(request.app, by_last_active([a | {"device": d["name"]} for d in devices for a in d.get("agents", [])]))
     unreachable = [d for d in devices if "error" in d]
+    if not request["user"]["is_admin"]:  # a private project's name is for admins too
+        try:
+            private = {p["name"] for p in (await fleetd_get("/projects"))["projects"] if p.get("private")}
+        except (aiohttp.ClientError, OSError, TimeoutError, KeyError):
+            agents = [a | {"project": None} for a in agents]
+        else:
+            agents = [a | {"project": None} if a.get("project") in private else a for a in agents]
     return render(request, "home.html", status=status, tab="agents", agents=agents,
                   unreachable=unreachable, error=error, now=int(time.time()), sleep_after=sleep_after(request.app["db"]))
 
@@ -490,10 +497,15 @@ def fleetd_down():
     return web.HTTPBadGateway(text="fleetd isn't answering on this host.")
 
 
+def people_view(request):
+    """Private projects are for admins; everyone else's pages leave them out."""
+    return {} if request["user"]["is_admin"] else {"public": "1"}
+
+
 async def projects_page(request, status=200, error=None, notice=None):
     try:
-        projects = (await fleetd_get("/projects"))["projects"]
-        agents, overview = await all_agents(), await fleetd_get("/brain")
+        projects = (await fleetd_get("/projects", **people_view(request)))["projects"]
+        agents, overview = await all_agents(), await fleetd_get("/brain", **people_view(request))
     except (aiohttp.ClientError, OSError, TimeoutError, KeyError):
         projects, agents, overview, error = [], [], {"graph": {"nodes": []}, "rules": {}}, "fleetd isn't answering on this host."
     for p in projects:
@@ -511,7 +523,7 @@ async def project_page(request, status=200, error=None, notice=None):
     if not PROJECT_NAME.match(name):
         raise web.HTTPNotFound()
     try:
-        data = await fleetd_get(f"/projects/{name}")
+        data = await fleetd_get(f"/projects/{name}", **people_view(request))
         agents = [a for a in await all_agents() if a.get("project") == name]
     except (KeyError, aiohttp.ContentTypeError):  # fleetd's 404 is text, not JSON
         raise web.HTTPNotFound(text=f"There's no project called {name}.")
@@ -539,7 +551,7 @@ async def note_page(request, status=200, error=None, notice=None):
     if not NOTE_ID.match(note_id):
         raise web.HTTPNotFound()
     try:
-        data = await fleetd_get("/brain/note", id=note_id)
+        data = await fleetd_get("/brain/note", id=note_id, **people_view(request))
     except (KeyError, aiohttp.ContentTypeError):
         raise web.HTTPNotFound(text="There's no such note.")
     except (aiohttp.ClientError, OSError, TimeoutError):
@@ -590,7 +602,7 @@ async def search_page(request):
     results, error = [], None
     if q:
         try:
-            data = await fleetd_get("/brain/search", q=q, **({"project": project} if PROJECT_NAME.match(project) else {}))
+            data = await fleetd_get("/brain/search", q=q, **people_view(request), **({"project": project} if PROJECT_NAME.match(project) else {}))
         except (aiohttp.ClientError, OSError, TimeoutError):
             raise fleetd_down()
         results, error = data.get("results", []), data.get("error")
@@ -609,7 +621,7 @@ async def create_project(request):
     if not PROJECT_NAME.match(name):
         return await new_project_page(request, 400, "Project names are 1-48 lowercase letters, digits or dashes.", {"name": name})
     try:
-        result = await fleetd_post("/projects/create", {"name": name})
+        result = await fleetd_post("/projects/create", {"name": name, "private": form.get("private") == "on"})
     except (aiohttp.ClientError, OSError, TimeoutError):
         result = {"error": "fleetd isn't answering on this host."}
     if "error" in result:
@@ -631,6 +643,16 @@ async def project_action(request):
             new = (await request.post()).get("new", "").strip()
             result = await fleetd_post("/projects/rename", {"name": name, "new": new})
             detail = f"{name} -> {new}"
+        elif action == "private":
+            private = (await request.post()).get("private") == "1"
+            result = await fleetd_post("/projects/private", {"name": name, "private": private})
+            detail = f"{name}: {'private' if private else 'public'}"
+            if "error" not in result:
+                notice = "This project is public: every agent can read it." if not private else "This project is private: only its own agents can read it."
+                if private and result.get("agents"):
+                    notice += f" Restart its agents to give them access: {', '.join(result['agents'])}."
+                if private and result.get("shared"):
+                    notice += f" {result['shared']} of its notes also belong to other projects, so those projects' agents can still read them."
         elif action == "instructions":
             result = await fleetd_post("/projects/instructions", {"name": name})
             if "error" not in result:
@@ -1307,7 +1329,7 @@ def make_app():
     app.router.add_get("/projects/new", new_project_page)
     app.router.add_post("/projects", create_project)
     app.router.add_get("/projects/{name}", project_page)
-    app.router.add_post("/projects/{name}/{action:digest|instructions|delete|rename}", project_action)
+    app.router.add_post("/projects/{name}/{action:digest|instructions|delete|rename|private}", project_action)
     app.router.add_get(r"/notes/{kind}/{slug}", note_page)
     app.router.add_post(r"/notes/{kind}/{slug}/{action:edit|delete}", note_action)
     app.router.add_post("/rules", add_rule)

@@ -9,6 +9,7 @@
     <input type="text" name="name" value="{{ form.name }}" required maxlength="48" pattern="[a-z0-9][a-z0-9\-]{0,47}"
       autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="e.g. fleet">
   </label>
+  <label class="check"><input type="checkbox" name="private"{% if form.private %} checked{% endif %}> Private: only this project's agents can read its brain</label>
   <button class="primary">Create project</button>
 </form>
 {% endblock %}

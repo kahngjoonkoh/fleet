@@ -12,9 +12,11 @@ start of a task is the global rules and its own project's overview, todos and de
 """
 
 import asyncio
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import time
@@ -39,7 +41,7 @@ CLOSED = ("done", "fixed", "superseded", "reached")
 RULE_KINDS = {"requirement", "convention"}  # the only kinds that can be a rule for every agent
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, created INTEGER NOT NULL, private INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL,
     body TEXT NOT NULL DEFAULT '', status TEXT, scope TEXT NOT NULL DEFAULT 'project', date TEXT,
     created TEXT NOT NULL, updated TEXT NOT NULL, sources TEXT NOT NULL DEFAULT '[]');
@@ -78,6 +80,8 @@ def db():
                               "CREATE TABLE projects (name TEXT PRIMARY KEY, created INTEGER NOT NULL);"
                               "INSERT INTO projects SELECT name, created FROM projects_old; DROP TABLE projects_old;")
         _db.executescript(SCHEMA)
+        if "private" not in [r[1] for r in _db.execute("PRAGMA table_info(projects)")]:
+            _db.execute("ALTER TABLE projects ADD COLUMN private INTEGER NOT NULL DEFAULT 0")
         if "saved" not in [r[1] for r in _db.execute("PRAGMA table_info(digests)")]:
             _db.executescript("ALTER TABLE digests ADD COLUMN saved INTEGER; ALTER TABLE digests ADD COLUMN notes INTEGER;")
     return _db
@@ -104,16 +108,72 @@ def project(name):
     return dict(row)
 
 
-def create(name):
+def create(name, private=False):
     if not PROJECT.match(name):
         raise Problem("Project names are 1-48 lowercase letters, digits or dashes.")
     try:
-        db().execute("INSERT INTO projects VALUES (?, ?)", (name, int(time.time())))
+        db().execute("INSERT INTO projects (name, created, private) VALUES (?, ?, ?)", (name, int(time.time()), int(bool(private))))
     except sqlite3.IntegrityError:
         raise Problem(f"There's already a project called {name}.")
     upsert(f"overview/{name}", "overview", name, projects=[name],
            body=f"{name}: Fleet fills this in from its agents' work.")
     return project(name)
+
+
+def set_private(name, private):
+    """Makes a project private or public. Returns how many of its notes also belong to other projects:
+    those stay readable by agents who can read those projects."""
+    project(name)
+    db().execute("UPDATE projects SET private = ? WHERE name = ?", (int(bool(private)), name))
+    return db().execute("SELECT count(*) FROM note_projects WHERE project = ? AND note IN "
+                        "(SELECT note FROM note_projects WHERE project != ?)", (name, name)).fetchone()[0]
+
+
+class Viewer:
+    """What a caller may read: everything except private projects it isn't in, and notes that belong
+    only to those. Rules for every agent are for every agent. A note that's also in a project the caller
+    can read stays readable, without naming the private project."""
+
+    def __init__(self, home=None):
+        names = [r[0] for r in db().execute("SELECT name FROM projects WHERE private")]
+        self.projects = set(names) - {home}
+        self.notes = set()
+        if self.projects:
+            q = ",".join("?" * len(self.projects))
+            self.notes = {r[0] for r in db().execute(
+                f"SELECT note FROM note_projects GROUP BY note HAVING SUM(project NOT IN ({q})) = 0 "
+                "AND note NOT IN (SELECT id FROM notes WHERE scope = 'global')", list(self.projects))}
+
+    def labels(self, names):
+        return [p for p in names if p not in self.projects]
+
+
+class _Everything:
+    """Fleet's own pages and the people using them: no filter."""
+    projects, notes = frozenset(), frozenset()
+    labels = staticmethod(list)
+
+
+EVERYTHING = _Everything()
+
+
+def _secret():
+    row = db().execute("SELECT value FROM settings WHERE key = 'token_secret'").fetchone()
+    if row:
+        return row[0]
+    db().execute("INSERT OR IGNORE INTO settings VALUES ('token_secret', ?)", (secrets.token_hex(32),))
+    return db().execute("SELECT value FROM settings WHERE key = 'token_secret'").fetchone()[0]
+
+
+def token(agent):
+    """The agent's proof of who it is on brain.sock, which anything on a machine can reach."""
+    return f"{agent}:{hmac.new(_secret().encode(), agent.encode(), 'sha256').hexdigest()[:40]}"
+
+
+def agent_of_token(value):
+    """The agent ("device/name") a token belongs to, or None."""
+    agent = (value or "").rpartition(":")[0]
+    return agent if agent and hmac.compare_digest(token(agent), value) else None
 
 
 def delete(name):
@@ -187,7 +247,7 @@ todos and milestones, all linked. Fleet writes it from agents' sessions; you onl
 At the start of every task, read what concerns you: the rules for every agent, and your project's
 overview, open todos and current decisions:
 
-    curl -s --unix-socket {sock} "http://fleet/me/$FLEET_AGENT"
+    curl -s --unix-socket {sock} -H "X-Fleet-Token: $FLEET_TOKEN" "http://fleet/me/$FLEET_AGENT"
 
 (If `$FLEET_AGENT` is empty, Fleet didn't start you; read
 `curl -sG --unix-socket {sock} http://fleet/here --data-urlencode host="$(hostname)" --data-urlencode folder="$PWD" --data-urlencode home="$HOME"` instead.)
@@ -195,11 +255,14 @@ overview, open todos and current decisions:
 Before you decide or change something, search everything. Other projects' decisions apply when you
 touch what they own (shared machines, services, infrastructure):
 
-    curl -sG --unix-socket {sock} http://fleet/search --data-urlencode q="WORDS"
+    curl -sG --unix-socket {sock} -H "X-Fleet-Token: $FLEET_TOKEN" http://fleet/search --data-urlencode q="WORDS"
 
 Add `--data-urlencode project=NAME` to search one project. One note and what's linked to it:
 `http://fleet/n/KIND/SLUG?depth=1`. How two notes connect: `http://fleet/path?from=ID&to=ID`.
 Every project: `http://fleet/projects`.
+
+Send the `X-Fleet-Token` header every time. It's how you read your own project if it's private; other
+projects' private notes don't appear. Don't try to read them another way, and don't share `$FLEET_TOKEN`.
 
 Rules for every agent are binding. If what you're about to do contradicts a decision or a
 requirement, tell the user before doing it."""
@@ -421,7 +484,7 @@ def saves():
 
 # --- search and graph -------------------------------------------------------------------
 
-def search(q, project=None, limit=25):
+def search(q, project=None, limit=25, viewer=EVERYTHING):
     words = [w for w in re.findall(r"\w+", (q or "").lower()) if len(w) > 1][:8]
     if not words:
         raise Problem("Search for some words, e.g. q=sleep tmux")
@@ -432,12 +495,15 @@ def search(q, project=None, limit=25):
     if project:
         sql += " AND (n.id IN (SELECT note FROM note_projects WHERE project = ?) OR n.scope = 'global')"
         args.append(project)
+    if viewer.notes:
+        sql += " AND n.id NOT IN (SELECT value FROM json_each(?))"
+        args.append(json.dumps(sorted(viewer.notes)))
     rows = [dict(r) for r in db().execute(sql + " ORDER BY bm25(notes_fts, 0, 5, 1) LIMIT ?", args + [limit])]
     labels = {}
     for r in db().execute("SELECT note, project FROM note_projects"):
         labels.setdefault(r[0], []).append(r[1])
     for r in rows:
-        r["projects"] = labels.get(r["id"], [])
+        r["projects"] = viewer.labels(labels.get(r["id"], []))
     return rows
 
 
@@ -454,7 +520,7 @@ def neighbourhood(note_id, depth=1):
     return seen
 
 
-def path(a, b, limit=6):
+def path(a, b, limit=6, hide=frozenset()):
     """The shortest chain of links between two notes, either direction: [(id, rel, id), ...] or None.
     Session notes link to everything they touched, so a chain never passes through one."""
     if a == b:
@@ -465,7 +531,7 @@ def path(a, b, limit=6):
         for n in frontier:
             for r in db().execute("SELECT src, rel, dst FROM links WHERE src = ? OR dst = ?", (n, n)):
                 other = r["dst"] if r["src"] == n else r["src"]
-                if other not in prev and (other == b or not other.startswith("session/")):
+                if other not in prev and other not in hide and (other == b or not other.startswith("session/")):
                     prev[other] = (n, r["src"], r["rel"], r["dst"])
                     if other == b:
                         steps, cur = [], b
@@ -487,10 +553,10 @@ def _edges(ids):
             db().execute(f"SELECT src, rel, dst FROM links WHERE src IN ({q}) AND dst IN ({q})", list(ids) * 2)]
 
 
-def graph(project_name):
+def graph(project_name, viewer=EVERYTHING):
     """The project's notes, plus the notes outside it they link to (marked outside)."""
-    own = {i: n for i, n in notes(project_name).items() if n["kind"] != "overview"}
-    outside = {m for i in own for m in _neighbour_ids(i)} - set(own)
+    own = {i: n for i, n in notes(project_name).items() if n["kind"] != "overview" and i not in viewer.notes}
+    outside = {m for i in own for m in _neighbour_ids(i)} - set(own) - viewer.notes
     extra = notes()
     nodes = [{"id": i, "kind": n["kind"], "title": n["title"], "status": n["status"]} for i, n in own.items()]
     nodes += [{"id": i, "kind": extra[i]["kind"], "title": extra[i]["title"], "status": extra[i]["status"], "outside": True}
@@ -498,9 +564,10 @@ def graph(project_name):
     return {"nodes": nodes, "edges": _edges({n["id"] for n in nodes})}
 
 
-def graph_all():
+def graph_all(viewer=EVERYTHING):
     """Projects, the shared things and notes that join them, and the rules for every agent."""
-    all_notes, names = notes(), [p["name"] for p in projects()]
+    all_notes = {i: n | {"projects": viewer.labels(n["projects"])} for i, n in notes().items() if i not in viewer.notes}
+    names = viewer.labels(p["name"] for p in projects())
     nodes = [{"id": f"project/{p}", "kind": "project", "title": p} for p in names]
     edges = []
     for i, n in all_notes.items():
@@ -541,9 +608,11 @@ def read_rules():
     return "\n".join(out) + "\n"
 
 
-def read_project(name, agent=None):
+def read_project(name, agent=None, viewer=EVERYTHING):
+    if name in viewer.projects:
+        raise Problem(f"There's no project called {name}.")
     project(name)
-    rows = notes(name)
+    rows = {i: n for i, n in notes(name).items() if i not in viewer.notes}
     who = ", ".join(members(name)) or "none yet"
     out = [f"# Project {name}", (f"You are agent {agent}. " if agent else "") + f"Its agents: {who}.", "",
            (note(f"overview/{name}") or {}).get("body", ""), ""]
@@ -567,53 +636,62 @@ def read_project(name, agent=None):
     return "\n".join(out).strip() + "\n"
 
 
-def read_me(agent, home):
+def read_me(agent, home, viewer=EVERYTHING):
     """What an agent reads at the start of a task: the rules, then its home project."""
     out = [read_rules()]
-    if home:
-        out.append(read_project(home, agent))
+    if home in viewer.projects:  # no token, or someone else's: don't name the project
+        out.append(f"Agent {agent}'s project is private and this request has no token for it. If you are that "
+                   "agent, send the X-Fleet-Token header; if $FLEET_TOKEN is empty, ask the user to restart "
+                   "you in Fleet. Projects you can read:\n" + read_projects(viewer))
+    elif home:
+        out.append(read_project(home, agent, viewer))
     else:
-        out.append(f"You are agent {agent}, which isn't part of a project. Projects:\n" + read_projects())
+        out.append(f"You are agent {agent}, which isn't part of a project. Projects:\n" + read_projects(viewer))
     return "\n".join(out)
 
 
-def read_projects():
+def read_projects(viewer=EVERYTHING):
     lines = []
     for p in projects():
+        if p["name"] in viewer.projects:
+            continue
         overview = re.sub(r"\s+", " ", (note(f"overview/{p['name']}") or {}).get("body", "")).strip()
-        lines.append(f"- {p['name']}: {overview[:200]}")
+        lines.append(f"- {p['name']}{' (private)' if p['private'] else ''}: {overview[:200]}")
     return "\n".join(lines) + "\n" if lines else "No projects yet.\n"
 
 
-def read_note(note_id, depth=1):
+def read_note(note_id, depth=1, viewer=EVERYTHING):
     n = note(note_id)
-    if n is None:
+    if n is None or note_id in viewer.notes:
         raise Problem(f"No note {note_id}. Search with http://fleet/search?q=WORDS.")
-    where = ", ".join(n["projects"]) or "no project"
+    where = ", ".join(viewer.labels(n["projects"])) or "no project"
     out = [f"# {n['title']}", f"{note_id} · {'rule for every agent' if n['scope'] == 'global' else where}"
            + (f" · {n['status']}" if n["status"] else "") + f" · updated {n['updated']}", "", n["body"] or "(no details yet)", ""]
     names = titles(neighbourhood(note_id, 1))
-    links = [f"- {rel.replace('_', ' ')} {t}: {names.get(t, t)}" for rel, ts in n["links"].items() for t in ts]
-    back = [f"- {src} ({rel.replace('_', ' ')} this): {names.get(src, src)}" for src, rel in backlinks(note_id)]
+    links = [f"- {rel.replace('_', ' ')} {t}: {names.get(t, t)}" for rel, ts in n["links"].items() for t in ts if t not in viewer.notes]
+    back = [f"- {src} ({rel.replace('_', ' ')} this): {names.get(src, src)}" for src, rel in backlinks(note_id) if src not in viewer.notes]
     if links:
         out += ["## Links", *links, ""]
     if back:
         out += ["## Linked from", *back, ""]
     if depth > 1:
         further = notes()
-        ring = sorted(neighbourhood(note_id, depth) - neighbourhood(note_id, 1))
+        ring = sorted(neighbourhood(note_id, depth) - neighbourhood(note_id, 1) - viewer.notes)
         if ring:
-            out += [f"## Within {depth} links", *[_line(i, further[i], True) for i in ring if i in further]]
+            out += [f"## Within {depth} links", *[_line(i, further[i] | {"projects": viewer.labels(further[i]["projects"])}, True)
+                                                  for i in ring if i in further]]
     return "\n".join(out).strip() + "\n"
 
 
-def read_kind(name, kind):
-    rows = notes(name, kind=kind)
+def read_kind(name, kind, viewer=EVERYTHING):
+    if name in viewer.projects:
+        raise Problem(f"There's no project called {name}.")
+    rows = {i: n for i, n in notes(name, kind=kind).items() if i not in viewer.notes}
     return "\n".join(_line(i, n) for i, n in rows.items()) + "\n" if rows else f"No {kind} notes in {name}.\n"
 
 
-def read_search(q, project_name=None):
-    rows = search(q, project_name)
+def read_search(q, project_name=None, viewer=EVERYTHING):
+    rows = search(q, project_name, viewer=viewer)
     if not rows:
         return "No matches.\n"
     out = []
@@ -624,8 +702,8 @@ def read_search(q, project_name=None):
     return "\n".join(out) + "\n"
 
 
-def read_path(a, b):
-    steps = path(a, b)
+def read_path(a, b, viewer=EVERYTHING):
+    steps = None if viewer.notes & {a, b} else path(a, b, hide=viewer.notes)
     if steps is None:
         return f"No chain of links from {a} to {b} within 6 steps.\n"
     names = titles({a, b} | {s for st in steps for s in (st[0], st[2])})
@@ -688,7 +766,8 @@ LISTED = 400  # notes from other projects the writer is shown, beyond the home p
 
 def writer_input(agent, home, text):
     """The writer's prompt, and the ids it was shown (only those may be updated in place)."""
-    everything = notes()
+    viewer = Viewer(home)  # another project's private notes never reach the writer, or this project's notes
+    everything = {i: n | {"projects": viewer.labels(n["projects"])} for i, n in notes().items() if i not in viewer.notes}
     shown, lines = [], []
 
     def add(i, n):
@@ -708,7 +787,7 @@ def writer_input(agent, home, text):
     for i, n in others[:LISTED]:
         add(i, n)
     overview = (note(f"overview/{home}") or {}).get("body", "") if home else ""
-    prompt = (f"Projects (name: overview):\n{read_projects()}\n"
+    prompt = (f"Projects (name: overview):\n{read_projects(viewer)}\n"
               f"This agent: {agent}. Home project: {home or 'none'}.\n"
               + (f"Home project overview: {overview}\n" if overview else "")
               + f"\nNotes (id | title | status | projects):\n" + ("\n".join(lines) or "(none yet)")
@@ -720,7 +799,10 @@ def apply(ops, source, home, shown):
     """Folds a writer's result into the brain and returns the ids it wrote. A new note whose id is
     already taken by a note the writer wasn't shown gets its own id, unless it's a shared kind
     (tech, machines, ...), which is meant to be one note everywhere."""
-    known = {p["name"] for p in projects()}
+    viewer = Viewer(home)
+    known = {p["name"] for p in projects()} - viewer.projects
+    # What a private project's session says stays in that project: never added to a note others can read.
+    private = bool(home) and bool(db().execute("SELECT 1 FROM projects WHERE name = ? AND private", (home,)).fetchone())
     touched, written = [], []
     renamed = {}
 
@@ -738,14 +820,16 @@ def apply(ops, source, home, shown):
         if not note_id or not raw.get("title"):
             continue
         kind = note_id.split("/")[0]
-        if note_id not in shown and kind not in SHARED and note(note_id) is not None:
+        found = note(note_id)
+        if found is not None and ((note_id not in shown and kind not in SHARED) or note_id in viewer.notes
+                                  or (private and found["projects"] != [home])):
             renamed[note_id] = new_id(kind, note_id.split("/", 1)[1])
             note_id = renamed[note_id]
         items.append((note_id, kind, raw))
 
     for note_id, kind, raw in items:
         given = [p for p in raw.get("projects") or [] if p in known]
-        mine = given or ([home] if home else [])
+        mine = [home] if private else given or ([home] if home else [])
         links = []
         for link in raw.get("links") or []:
             target = clean(link.get("to"))
@@ -758,7 +842,7 @@ def apply(ops, source, home, shown):
                 upsert(target, target.split("/")[0], target.split("/", 1)[1].replace("-", " "), projects=mine, source=source)
                 touched.append(target)
         upsert(note_id, kind, raw["title"], body=raw.get("body"), status=raw.get("status") or None,
-               scope="global" if raw.get("scope") == "global" and kind in RULE_KINDS else None,
+               scope="global" if raw.get("scope") == "global" and kind in RULE_KINDS and not private else None,
                date=(raw.get("date") or "")[:10] or None,
                projects=mine, links=links, source=source)
         touched.append(note_id)

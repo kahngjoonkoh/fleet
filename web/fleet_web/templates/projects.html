@@ -31,7 +31,7 @@
 {% for p in projects %}
 <a class="card device project-card" href="/projects/{{ p.name | urlencode }}">
   <header class="device-head">
-    <h2>{{ p.name }}</h2>
+    <h2>{{ p.name }}{% if p.private %} <span class="pill">Private</span>{% endif %}</h2>
     {% if p.running %}<span class="status on">{{ p.running }} running</span>{% endif %}
   </header>
   <dl class="stats">

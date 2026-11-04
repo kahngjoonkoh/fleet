@@ -12,7 +12,7 @@ set -u
 cd "$(dirname "$0")"
 REMOTE=${FLEET_TEST_REMOTE:-e4}
 HUB=$(hostname)
-FREE="agents sleep terminal speed_and_rename projects project_field files"
+FREE="agents sleep terminal speed_and_rename projects project_field files private"
 paid=""; tests=""
 for a in "$@"; do [ "$a" = "--paid" ] && paid=brain_paid || tests="$tests $a"; done
 [ -n "$tests" ] || tests="$FREE"
@@ -20,8 +20,8 @@ tests="$tests $paid"
 
 # Folders the tests start agents in, on both machines; removed again at the end, with the Claude
 # Code conversations agents had in them.
-REMOTE_DIRS="fleet-test-a fleet-test-rn fleet-test-mf fleet-test-pf fleet-test-pf2 fleet-test-l fleet-test-mk fleet-test-files"
-HUB_DIRS="fleet-test-mf-hub fleet-test-files"
+REMOTE_DIRS="fleet-test-a fleet-test-rn fleet-test-mf fleet-test-pf fleet-test-pf2 fleet-test-l fleet-test-mk fleet-test-files fleet-test-pv"
+HUB_DIRS="fleet-test-mf-hub fleet-test-files fleet-test-pv fleet-test-pv-o"
 dirs() { # create|remove
   if [ "$1" = create ]; then
     ssh "$REMOTE" "cd ~/.cache && mkdir -p $REMOTE_DIRS" && (cd ~/.cache && mkdir -p $HUB_DIRS)
@@ -40,6 +40,14 @@ failed=0
 for t in $tests; do
   echo "== $t"
   out=$(in_web "$t.py" 2>&1)
+  # Some run on the hub itself: the rule on a throwaway database, then real agents and their tokens.
+  if [ "$t" = private ]; then
+    data=$(mktemp -d)
+    out="$out
+$(FLEET_DATA_DIR=$data PYTHONPATH=../fleetd "$(PATH=$HOME/.local/bin:$PATH uv tool dir)/fleet/bin/python" private_logic.py 2>&1)
+$(FLEET_TEST_REMOTE=$REMOTE FLEET_TEST_HUB=$HUB python3 private_host.py 2>&1)"
+    rm -rf "$data"
+  fi
   echo "$out" | grep -E "^(PASS|FAIL)"
   echo "$out" | grep -qE "^FAIL|Traceback" && { failed=$((failed + 1)); echo "$out" | grep -vE "^(PASS|FAIL)" | tail -5; }
   in_web cleanup.py

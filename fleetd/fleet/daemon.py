@@ -179,6 +179,8 @@ async def agents_action(request):
     here = device["name"] if device else HOST
     if action in ("create", "rename"):  # agents know who they are, to read their part of the brain
         body["fleet_agent"] = f"{here}/{body.get('new') or body.get('name', '')}"
+    if action in ("create", "rename", "start", "wake") and HUB_FILE.exists():  # and can prove it
+        body["fleet_token"] = brain.token(f"{here}/{body.get('new') or body.get('name', '')}")
     result = await agents_call(device, action, body, timeout=60)
     if action == "rename" and "error" not in result and HUB_FILE.exists():
         brain.rename_agent(f"{here}/{body.get('name')}", f"{here}/{body.get('new')}")
@@ -292,39 +294,50 @@ def problem(e):
     return web.json_response({"error": str(e)})
 
 
+def people_view(request):
+    """Who's looking at a Projects page: fleet-web sends public=1 for anyone who isn't an admin."""
+    return brain.Viewer() if request.query.get("public") else brain.EVERYTHING
+
+
 async def projects_list(request):
-    return web.json_response({"projects": [p | brain.summary(p["name"]) for p in brain.projects()]})
+    view = people_view(request)
+    return web.json_response({"projects": [p | brain.summary(p["name"]) for p in brain.projects() if p["name"] not in view.projects]})
 
 
 async def project_detail(request):
-    name = request.match_info["name"]
+    name, view = request.match_info["name"], people_view(request)
+    if name in view.projects:
+        raise web.HTTPNotFound(text=f"There's no project called {name}.")
     try:
         p = brain.project(name)
     except brain.Problem as e:
         raise web.HTTPNotFound(text=str(e))
     return web.json_response({"project": p | brain.summary(name) | {"agents": brain.members(name)},
                               "overview": (brain.note(f"overview/{name}") or {}).get("body", ""),
-                              "notes": brain.notes(name), "graph": brain.graph(name)})
+                              "notes": {i: n for i, n in brain.notes(name).items() if i not in view.notes},
+                              "graph": brain.graph(name, view)})
 
 
 async def brain_note(request):
-    note_id = request.query.get("id", "")
+    note_id, view = request.query.get("id", ""), people_view(request)
     n = brain.note(note_id)
-    if n is None:
+    if n is None or note_id in view.notes:
         raise web.HTTPNotFound(text="no such note")
-    near = brain.neighbourhood(note_id, 1)
-    return web.json_response({"id": note_id, "note": n, "backlinks": brain.backlinks(note_id),
-                              "titles": brain.titles(near), "projects": [p["name"] for p in brain.projects()]})
+    near = brain.neighbourhood(note_id, 1) - view.notes
+    n["projects"] = view.labels(n["projects"])
+    n["links"] = {rel: [t for t in ts if t not in view.notes] for rel, ts in n["links"].items()}
+    return web.json_response({"id": note_id, "note": n, "backlinks": [b for b in brain.backlinks(note_id) if b[0] not in view.notes],
+                              "titles": brain.titles(near), "projects": view.labels(p["name"] for p in brain.projects())})
 
 
 async def brain_overview(request):
     """The Projects tab: the all-projects graph and the rules for every agent."""
-    return web.json_response({"graph": brain.graph_all(), "rules": brain.notes(scope="global")})
+    return web.json_response({"graph": brain.graph_all(people_view(request)), "rules": brain.notes(scope="global")})
 
 
 async def brain_search(request):
     try:
-        return web.json_response({"results": brain.search(request.query.get("q", ""), request.query.get("project") or None, 50)})
+        return web.json_response({"results": brain.search(request.query.get("q", ""), request.query.get("project") or None, 50, people_view(request))})
     except brain.Problem as e:
         return problem(e)
 
@@ -348,13 +361,26 @@ async def instruct_members(name):
     return {"ok": True, "changed": sorted(changed)}
 
 
+async def give_tokens(name):
+    """Stores a brain token for each of the project's agents; it reaches them the next time they start."""
+    for key in brain.members(name):
+        device_name, _, agent = key.partition("/")
+        await agents_call(find_device(device_name), "settings", {"name": agent, "fleet_token": brain.token(key)})
+
+
 async def projects_action(request):
-    """POST /projects/{create,delete,rename,instructions} with a JSON body."""
+    """POST /projects/{create,delete,rename,instructions,private} with a JSON body."""
     action, body = request.match_info["action"], await request.json()
     try:
         if action == "create":
-            brain.create(body.get("name", ""))
+            brain.create(body.get("name", ""), body.get("private"))
             return web.json_response({"ok": True})
+        if action == "private":
+            shared = brain.set_private(body.get("name", ""), body.get("private"))
+            if body.get("private"):
+                await give_tokens(body["name"])
+                await instruct_members(body["name"])
+            return web.json_response({"ok": True, "shared": shared, "agents": brain.members(body["name"])})
         if action == "delete":
             brain.delete(body.get("name", ""))
             return web.json_response({"ok": True})
@@ -381,6 +407,8 @@ async def brain_action(request):
         if action == "home":  # put an agent in a project (or none), and tell its folder about the brain
             brain.set_home(f"{body['device']}/{body['agent']}", body.get("project") or "")
             if body.get("project"):
+                await agents_call(find_device(body["device"]), "settings",
+                                  {"name": body["agent"], "fleet_token": brain.token(f"{body['device']}/{body['agent']}")})
                 folder = await agent_folder(body["device"], body["agent"], fresh=True)
                 if folder:
                     result = await write_instructions(body["device"], folder)
@@ -406,7 +434,7 @@ MIN_SLICE = 600  # characters of new conversation worth a writer call; less wait
 async def digest(body):
     """Reads what a session has said since last time and has the writer fold it into the brain, a
     slice of up to 60,000 characters at a time. The session is an agent's ({"device", "agent"}) or
-    any Claude Code or pi session file on a device ({"device", "path", "folder"}, from /fleet-save).
+    any Claude Code or pi session file on a device ({"device", "path", "folder"}, from /fleet-push).
     Returns what it wrote, and whether there's more to read."""
     device_name = body["device"]
     device = find_device(device_name)
@@ -430,6 +458,9 @@ async def digest(body):
                 break
             home = (body.get("project") or (brain.home_of(key) if body.get("agent")
                                              else await project_for_folder(device_name, t.get("folder") or "")))
+            if home in body.get("hidden", ()):  # asked for on brain.sock by something not in that private project
+                return {"error": "This session's project is private and the request has no token for it. Send the "
+                                 "X-Fleet-Token header, from an agent Fleet started in that project."}
             prompt, shown = brain.writer_input(who, home, t["text"])
             data = await brain.write(prompt, body.get("writer") or brain.writer())
             written += [i for i in brain.apply(data, f"{who} {time.strftime('%Y-%m-%d')}", home, shown) if i not in written]
@@ -512,26 +543,33 @@ def brain_app():
             return web.Response(text=out, content_type="text/markdown")
         return handler
 
+    def viewer(r):
+        """What this request may read. Anything on a machine can reach this socket, so only a token says who's asking."""
+        agent = brain.agent_of_token(r.headers.get("X-Fleet-Token"))
+        return brain.Viewer(brain.home_of(agent) if agent else None)
+
     async def me(r):
         device_name, agent = r.match_info["device"], r.match_info["agent"]
-        return brain.read_me(f"{device_name}/{agent}", brain.home_of(f"{device_name}/{agent}"))
+        return brain.read_me(f"{device_name}/{agent}", brain.home_of(f"{device_name}/{agent}"), viewer(r))
 
     async def here(r):
         """The project (and rules) for a session Fleet didn't start: by machine and folder."""
         device_name = await device_for_host(r.query.get("host"))
         folder = r.query.get("folder", "")
-        home = await project_for_folder(device_name, _tilde(folder, r.query.get("home")))
-        if home:
-            return brain.read_rules() + "\n" + brain.read_project(home)
-        return (brain.read_rules() + f"\nNo project's agents work in {folder} on {device_name}. Projects:\n"
-                + brain.read_projects())
+        home, view = await project_for_folder(device_name, _tilde(folder, r.query.get("home"))), viewer(r)
+        if home and home not in view.projects:
+            return brain.read_rules() + "\n" + brain.read_project(home, viewer=view)
+        return (brain.read_rules() + f"\nNo project you can read has agents working in {folder} on {device_name}. Projects:\n"
+                + brain.read_projects(view))
 
     async def save(r):
-        """POST: file a session into the brain now, from /fleet-save. Form fields: agent (FLEET_AGENT),
+        """POST: file a session into the brain now, from /fleet-push. Form fields: agent (FLEET_AGENT),
         or host, file (the session's .jsonl), folder and home ($HOME, to match project folders)."""
-        form = await r.post()
-        extra = {"limit": 120000}  # a save reads bigger slices: fewer writer calls for a long session
+        form, view = await r.post(), viewer(r)
+        extra = {"limit": 120000, "hidden": view.projects}  # a save reads bigger slices: fewer writer calls for a long session
         if form.get("project"):  # file it under this project, whatever its folder
+            if form["project"] in view.projects:
+                raise brain.Problem(f"There's no project called {form['project']}.")
             extra["project"] = brain.project(form["project"])["name"]
         if form.get("agent"):
             device_name, _, agent = form["agent"].partition("/")
@@ -551,7 +589,7 @@ def brain_app():
         lines = [f"Saved {result['notes']} notes from {result['chunks']} slice(s) of this session:"]
         lines += [f"- {i}: {names.get(i, i)}" for i in result["written"]]
         if not result["done"]:
-            lines.append("There's more of this session left to read; run /fleet-save again.")
+            lines.append("There's more of this session left to read; run /fleet-push again.")
         return "\n".join(lines) + "\n"
 
     def depth(r):
@@ -567,15 +605,15 @@ def brain_app():
     app.router.add_get("/here", text(here))
     app.router.add_post("/save", text(save))
     app.router.add_get("/me/", text(lambda r: brain.read_rules() + "\n$FLEET_AGENT is empty, so Fleet didn't start you. Projects:\n"
-                                    + brain.read_projects()))
+                                    + brain.read_projects(viewer(r))))
     app.router.add_get("/rules", text(lambda r: brain.read_rules()))
-    app.router.add_get("/projects", text(lambda r: brain.read_projects()))
-    app.router.add_get("/search", text(lambda r: brain.read_search(r.query.get("q", ""), r.query.get("project") or None)))
-    app.router.add_get("/path", text(lambda r: brain.read_path(r.query.get("from", ""), r.query.get("to", ""))))
-    app.router.add_get("/n/{kind}/{slug}", text(lambda r: brain.read_note(f"{m(r, 'kind')}/{m(r, 'slug')}", depth(r))))
-    app.router.add_get("/p/{name}", text(lambda r: brain.read_rules() + "\n" + brain.read_project(m(r, "name"))))
-    app.router.add_get("/p/{name}/kind/{kind}", text(lambda r: brain.project(m(r, "name")) and brain.read_kind(m(r, "name"), m(r, "kind"))))
-    app.router.add_get("/p/{name}/search", text(lambda r: brain.project(m(r, "name")) and brain.read_search(r.query.get("q", ""), m(r, "name"))))
+    app.router.add_get("/projects", text(lambda r: brain.read_projects(viewer(r))))
+    app.router.add_get("/search", text(lambda r: brain.read_search(r.query.get("q", ""), r.query.get("project") or None, viewer(r))))
+    app.router.add_get("/path", text(lambda r: brain.read_path(r.query.get("from", ""), r.query.get("to", ""), viewer(r))))
+    app.router.add_get("/n/{kind}/{slug}", text(lambda r: brain.read_note(f"{m(r, 'kind')}/{m(r, 'slug')}", depth(r), viewer(r))))
+    app.router.add_get("/p/{name}", text(lambda r: brain.read_rules() + "\n" + brain.read_project(m(r, "name"), viewer=viewer(r))))
+    app.router.add_get("/p/{name}/kind/{kind}", text(lambda r: brain.project(m(r, "name")) and brain.read_kind(m(r, "name"), m(r, "kind"), viewer(r))))
+    app.router.add_get("/p/{name}/search", text(lambda r: brain.read_kind(m(r, "name"), "", viewer(r)) and brain.project(m(r, "name")) and brain.read_search(r.query.get("q", ""), m(r, "name"), viewer(r))))
     return app
 
 
@@ -791,7 +829,7 @@ async def terminal(request):
     await ws.prepare(request)
     reattached = shell is not None
     if shell is None and agent:
-        await agents_call(device, "wake", {"name": agent}, timeout=40)  # opening an agent that's asleep wakes it
+        await agents_call(device, "wake", {"name": agent} | ({"fleet_token": brain.token(f"{device['name'] if device else HOST}/{agent}")} if HUB_FILE.exists() else {}), timeout=40)  # opening an agent that's asleep wakes it
     if shell is None:
         shell = shells[sid] = Shell(sid, target, argv)
     await shell.attach(ws, reattached)
@@ -816,7 +854,7 @@ def main():
     app.router.add_post("/files/write", files_write)
     app.router.add_get("/projects", projects_list)
     app.router.add_get("/projects/{name}", project_detail)
-    app.router.add_post("/projects/{action:create|delete|rename|instructions}", projects_action)
+    app.router.add_post("/projects/{action:create|delete|rename|instructions|private}", projects_action)
     app.router.add_get("/brain", brain_overview)
     app.router.add_get("/brain/note", brain_note)
     app.router.add_get("/brain/search", brain_search)

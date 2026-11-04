@@ -420,6 +420,8 @@ def _script(record):
     return (f"#!/bin/sh\n# Written by Fleet for agent {record['name']}.\n"
             # Who this agent is, as the hub names it: the brain's /me/$FLEET_AGENT reads its part.
             f"export FLEET_AGENT={who}\n"
+            # Its proof of that, for a private project's part of the brain.
+            + (f"export FLEET_TOKEN={shlex.quote(record['fleet_token'])}\n" if record.get("fleet_token") else "") +
             f"cd {folder} || {{ echo \"Fleet: can't open the folder {record['folder']}\"; exit 1; }}\n"
             f"{wait}"
             f"if [ -e {marker} ]; then {run(record['resume'])}; fi\n"
@@ -462,6 +464,8 @@ def create(args):
               "remote_control": bool(args.get("remote_control")) and t.get("rc", False)}
     if args.get("fleet_agent"):
         record["fleet_agent"] = str(args["fleet_agent"])[:100]
+    if args.get("fleet_token"):
+        record["fleet_token"] = str(args["fleet_token"])[:200]
     if "{id}" in t.get("start", ""):
         record["session"] = aid  # the agent's conversation, for the project brain to read
     _write(path, json.dumps(record, indent=2) + "\n")
@@ -518,8 +522,19 @@ def _awake(name):
     _systemctl("restart", _unit(name))
 
 
+def _take_token(name, args):
+    """Remembers the agent's brain token from the hub. It reaches the agent the next time it starts."""
+    record = _load(name)
+    if args.get("fleet_token") and record.get("fleet_token") != args["fleet_token"]:
+        record["fleet_token"] = str(args["fleet_token"])[:200]
+        _write(_path(name, ".json"), json.dumps(record, indent=2) + "\n")
+        _write(_path(name, ".sh"), _script(record), 0o700)
+
+
 def start(args):
-    _awake(_record(args))
+    name = _record(args)
+    _take_token(name, args)
+    _awake(name)
     return {"ok": True}
 
 
@@ -550,6 +565,7 @@ def sleep(args):
 def wake(args):
     """Before opening an agent: starts it if it's asleep. A stopped agent stays stopped."""
     name = _record(args)
+    _take_token(name, args)
     woke = os.path.exists(_path(name, ".asleep")) and not _is_active(name)
     if woke:
         _awake(name)
@@ -562,6 +578,8 @@ def settings(args):
     record = _load(name)
     if "remote_control" in args:
         record["remote_control"] = bool(args["remote_control"]) and TYPES.get(record["type"], {}).get("rc", False)
+    if args.get("fleet_token"):
+        record["fleet_token"] = str(args["fleet_token"])[:200]
     _write(_path(name, ".json"), json.dumps(record, indent=2) + "\n")
     _write(_path(name, ".sh"), _script(record), 0o700)
     return {"ok": True}
@@ -583,6 +601,8 @@ def rename(args):
     record["name"] = new
     if args.get("fleet_agent"):
         record["fleet_agent"] = str(args["fleet_agent"])[:100]
+    if args.get("fleet_token"):
+        record["fleet_token"] = str(args["fleet_token"])[:200]
     for ext in (".started", ".asleep", ".active"):
         if os.path.exists(_path(old, ext)):
             os.replace(_path(old, ext), _path(new, ext))
@@ -699,7 +719,7 @@ def _session_roots():
 def transcript(args):
     """A conversation from byte `offset`, as text of at most `limit` characters, cut at a line, with
     the offset to continue from. Fleet's brain writer reads conversations this way: an agent's own
-    ({"name"}), or any Claude Code or pi session file ({"path"}, e.g. for /fleet-save)."""
+    ({"name"}), or any Claude Code or pi session file ({"path"}, e.g. for /fleet-push)."""
     if args.get("path"):
         path = os.path.realpath(os.path.expanduser(args["path"]))
         if not path.endswith(".jsonl") or not any(path.startswith(root + os.sep) for root in _session_roots()):

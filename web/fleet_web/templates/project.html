@@ -5,7 +5,7 @@
 {% block content %}
 <p class="crumbs small"><a href="/projects">Projects</a> /</p>
 <div class="title-row">
-  <h1>{{ p.name }}</h1>
+  <h1>{{ p.name }}{% if p.private %} <span class="pill">Private</span>{% endif %}</h1>
   {% if user.is_admin %}<a class="primary button" href="/agents/new?project={{ p.name | urlencode }}">New agent here</a>{% endif %}
 </div>
 <p class="muted small project-where">{{ p.agents | length }} agent{{ "" if p.agents | length == 1 else "s" }} · {{ p.notes }} notes · updated {{ p.updated or "never" }}</p>
@@ -78,6 +78,7 @@
   <div class="actions">
     <form method="post" action="/projects/{{ p.name }}/digest"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="link">Update brain now</button></form>
     <form method="post" action="/projects/{{ p.name }}/instructions"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="link">Update its agents' AGENTS.md</button></form>
+    <form method="post" action="/projects/{{ p.name }}/private"{% if p.private %} data-confirm="Make {{ p.name }} public? Every agent will be able to read its brain."{% endif %}><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="private" value="{{ '0' if p.private else '1' }}"><button class="link">{{ "Make public" if p.private else "Make private" }}</button></form>
     <form method="post" action="/projects/{{ p.name }}/delete" data-confirm="Delete project {{ p.name }}? Notes that concern only it go too; shared ones stay. Its agents keep running, in no project.">
       <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link danger">Delete project</button></form>
   </div>

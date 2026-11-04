@@ -86,6 +86,11 @@ concerns (one, several or none). Agents never write it; they read it.
   one when you tell an agent something applies everywhere; you can add, edit or remove them.
 - Creating a project adds a short section to the folder's `AGENTS.md` saying how to read the brain,
   and `@AGENTS.md` to `CLAUDE.md` so Claude Code reads it too. Nothing else in those files changes.
+- A project can be private (when you create it, or from its page). Only agents in it can read it, and
+  they can still read every public project. Agents prove who they are with a token Fleet gives them when
+  they start; existing agents get theirs at their next restart. Among Fleet's users only admins see private
+  projects. This keeps agents out through the brain, but it isn't a wall: agents run as the same OS user, so
+  one that goes looking can still read the database file or another agent's files on the same machine.
 - Agents read it with `curl` through `~/.local/state/fleet/brain.sock`: `/me/$FLEET_AGENT` (the rules
   and their project), `/search?q=`, `/n/KIND/SLUG?depth=`, `/path?from=&to=`. On the hub fleetd serves
   that socket; every other device gets the same path forwarded over ssh, so nothing is copied.
@@ -95,3 +100,20 @@ concerns (one, several or none). Agents never write it; they read it.
   `~/.local/share/fleet/brain/` for Obsidian.
 - The Projects tab has search, the rules, each project's notes, todos and milestones with a graph,
   a page per note (editable), and a graph of all projects joined by what they share.
+
+## Commands for your agents
+
+`/fleet-push` files the current session into the brain now, and `/fleet-pull` picks a project back up
+from it. Install them for each coding agent you use, on each machine. Rerun the same line to update.
+
+Claude Code ([script](skills/install-claude.sh)):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kahngjoonkoh/fleet/main/skills/install-claude.sh | sh
+```
+
+pi ([script](skills/install-pi.sh)):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kahngjoonkoh/fleet/main/skills/install-pi.sh | sh
+```
