@@ -9,7 +9,9 @@
   <header class="agent-row" data-toggle>
     <h2>{{ a.name }}</h2>
     <span class="pill">{{ a.device }}</span>
-    {% if a.state == "running" %}
+    {% if a.removing %}
+    <span class="status idle">Saving, then removing</span>
+    {% elif a.state == "running" %}
     <span class="status on">Connected</span>
     {% elif a.state == "asleep" %}
     <span class="status idle">Sleeping</span>
@@ -51,8 +53,14 @@
     {% endif %}</dd>{% endif %}
     <dt>Sleep</dt><dd>{% if a.state == "asleep" %}Wakes when opened{% elif not a.lazy %}Never; it can't resume{% elif a.pinned %}Only when you press Sleep; pinned{% elif not sleep_after %}Off in Settings{% else %}After {{ sleep_after | minutes }} idle{% endif %}</dd>
   </dl>
-  {% if user.is_admin %}
+  {% if user.is_admin and a.remove_error %}<p class="error small">{{ a.remove_error }}</p>{% endif %}
+  {% if user.is_admin and a.removing %}
+  <p class="muted small">Saving what {{ a.name }} said since the last brain update; it's removed once that's done.</p>
+  {% elif user.is_admin %}
   {% set base = "/agents/" ~ (a.device | urlencode) ~ "/" ~ (a.name | urlencode) %}
+  {# Said something the brain hasn't read yet: Remove asks whether to save it first (app.js). #}
+  {% set b = a.brain or {} %}
+  {% set unsaved = a.type in ("claude", "pi") and la and la > [b.saved or 0, b.read or 0] | max %}
   <div class="actions">
     {% if a.state == "asleep" %}
     <form method="post" action="{{ base }}/wake"><input type="hidden" name="csrf" value="{{ csrf }}">
@@ -75,8 +83,8 @@
     <form method="post" action="{{ base }}/stop" data-confirm="Stop {{ a.name }} on {{ a.device }}? Whatever it's doing ends now, and it stays stopped after a reboot. Start picks the conversation up again.">
       <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link danger">Stop</button></form>
     {% else %}
-    <form method="post" action="{{ base }}/remove" data-confirm="Remove {{ a.name }} from {{ a.device }}? The folder isn't touched.">
-      <input type="hidden" name="csrf" value="{{ csrf }}"><button class="link danger">Remove</button></form>
+    <form method="post" action="{{ base }}/remove"{% if unsaved %} data-save-first="{{ a.name }}" data-device="{{ a.device }}"{% else %} data-confirm="Remove {{ a.name }} from {{ a.device }}? The folder isn't touched."{% endif %}>
+      <input type="hidden" name="csrf" value="{{ csrf }}">{% if unsaved %}<input type="hidden" name="save" value="">{% endif %}<button class="link danger">Remove</button></form>
     {% endif %}
   </div>
   {% endif %}

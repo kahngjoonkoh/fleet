@@ -395,3 +395,13 @@ body.dropping main { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .file-md h3 { font-size: 20px; margin: 20px 0 8px; } .file-md h4 { font-size: 17px; } .file-md h5 { font-size: 15px; }
 .file-md > h3:first-child { margin-top: 0; }
 .menu-panel button.danger-text { color: var(--danger); }
+/* The overlay that asks before an action (app.js askSaveFirst): a card over a dimmed page. */
+dialog.ask { background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 12px;
+  padding: 24px; width: min(440px, calc(100vw - 32px)); box-sizing: border-box; }
+dialog.ask::backdrop { background: rgb(0 0 0 / 0.45); }
+dialog.ask h2 { margin: 0 0 8px; }
+dialog.ask p { margin: 0 0 20px; color: var(--muted); }
+.ask-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+dialog.ask[open], dialog.ask[open]::backdrop { animation: ask-in 0.15s ease-out; }
+@keyframes ask-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { dialog.ask[open], dialog.ask[open]::backdrop { animation: none; } }

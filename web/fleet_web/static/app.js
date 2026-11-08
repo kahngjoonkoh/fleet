@@ -36,6 +36,45 @@ document.addEventListener("submit", (e) => {
   if (message && !confirm(message)) e.preventDefault();
 });
 
+// Removing an agent that said something the brain hasn't read yet: an overlay asks whether to save it
+// to the brain first. The answer goes in the form's "save" field and the form is sent again, past here.
+function askSaveFirst(name, device) {
+  return new Promise((resolve) => {
+    const d = document.createElement("dialog");
+    d.className = "ask";
+    d.setAttribute("aria-labelledby", "ask-title");
+    const h = Object.assign(document.createElement("h2"), { id: "ask-title", textContent: `Save ${name} to the brain first?` });
+    const p = Object.assign(document.createElement("p"), {
+      textContent: `${name} on ${device} said things the brain hasn't read yet. Remove it without saving and they stay out of the brain. ` +
+        `Its folder isn't touched either way.`,
+    });
+    const row = Object.assign(document.createElement("div"), { className: "ask-actions" });
+    for (const [label, cls, value] of [["Save, then remove", "primary", "1"], ["Remove without saving", "link danger", "0"], ["Cancel", "link", ""]]) {
+      const b = Object.assign(document.createElement("button"), { type: "button", className: cls, textContent: label });
+      b.addEventListener("click", () => d.close(value));
+      row.append(b);
+    }
+    d.append(h, p, row);
+    d.addEventListener("click", (e) => { if (e.target === d) d.close(""); });  // a tap on the backdrop cancels
+    d.addEventListener("close", () => { d.remove(); resolve(d.returnValue); });  // Escape leaves returnValue ""
+    document.body.append(d);
+    d.showModal();
+    row.firstChild.focus();
+  });
+}
+
+document.addEventListener("submit", async (e) => {
+  const form = e.target;
+  if (!form.dataset.saveFirst) return;
+  if (form.dataset.asked) { delete form.dataset.asked; return; }  // answered: let it go
+  e.preventDefault();
+  const answer = await askSaveFirst(form.dataset.saveFirst, form.dataset.device);
+  if (!answer || !form.isConnected) return;
+  form.elements.save.value = answer;
+  form.dataset.asked = "1";
+  form.requestSubmit();
+});
+
 // --- live pages -------------------------------------------------------------------------
 // Parts of a page marked data-live (agent cards, devices) refresh quietly every 10 seconds while the
 // page is in view: the page is fetched again and only those parts are swapped, and only when they
@@ -46,7 +85,8 @@ let refreshing = false;
 function busy(region) {
   const el = document.activeElement;
   return region.contains(el) && el !== document.body && !el.matches(".chev")
-    || region.querySelector("details[open], [aria-busy=true]");
+    || region.querySelector("details[open], [aria-busy=true]")
+    || document.querySelector("dialog.ask[open]");  // the card it asks about must still be there after
 }
 
 function swap(html, force = false) {

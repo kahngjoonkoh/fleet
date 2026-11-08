@@ -310,7 +310,35 @@ def with_brain(app, agents):
         due = app["last_digest"].get(key)  # the 2-hour update only runs while the agent isn't quiet
         busy = a["state"] == "running" and active and now - active <= quiet_for
         a["brain_next"] = max(0, int(due + BUSY_DIGEST - now)) if due and busy else None
+        a["removing"] = key in app["removing"]
+        a["remove_error"] = app["remove_error"].get(key)
     return agents
+
+
+async def save_then_remove(app, device, name, who, ip):
+    """Remove, after the brain has read everything the agent said. It runs in the background because
+    a save can take minutes; the card says so meanwhile. The agent's record has to outlive the save
+    (the brain finds the conversation through it), so if saving fails the agent stays."""
+    key = f"{device}/{name}"
+    try:
+        for _ in range(20):  # each update reads up to 6 slices; go again until it has read to the end
+            while key in app["digesting"]:  # an update already under way: let it finish, then read the rest
+                await asyncio.sleep(2)
+            result = await run_digest(app, device, name, force=True)
+            if "error" in result:
+                app["remove_error"][key] = f"Couldn't save to the brain, so it wasn't removed: {result['error']}"
+                return
+            if result.get("done", True):
+                break
+        result = await fleetd_post("/agents/remove", {"device": device, "name": name})
+        if "error" in result:
+            app["remove_error"][key] = f"Saved to the brain, but removing failed: {result['error']}"
+            return
+        store.audit(app["db"], who, "agent-remove", f"{key} after saving to the brain", ip)
+    except (aiohttp.ClientError, OSError, TimeoutError) as e:
+        app["remove_error"][key] = f"fleetd: {e or type(e).__name__}"
+    finally:
+        app["removing"].discard(key)
 
 
 async def watch_idle(app):
@@ -449,7 +477,16 @@ async def agent_action(request):
     device, name, action = (request.match_info[k] for k in ("device", "name", "action"))
     if not DEVICE_NAME.match(device) or not AGENT_NAME.match(name):
         raise web.HTTPNotFound()
-    body = {"device": device, "name": name}
+    body, key = {"device": device, "name": name}, f"{device}/{name}"
+    if key in request.app["removing"]:
+        return await home(request, 409, f"{key} is being saved to the brain, then removed.")
+    request.app["remove_error"].pop(key, None)
+    if action == "remove" and (await request.post()).get("save") == "1":  # the card asked; see save_then_remove
+        agent = next((a for a in await all_agents() if a["device"] == device and a["name"] == name), None)
+        if agent and agent["type"] in BRAIN_TYPES:
+            request.app["removing"].add(key)
+            asyncio.create_task(save_then_remove(request.app, device, name, request["user"]["email"], client_ip(request)))
+            redirect(back(request))
     if action in ("pin", "unpin"):
         action, body["pinned"] = "pin", action == "pin"
     if action == "sleep":  # pressed by hand: pinned agents sleep too
@@ -1299,6 +1336,7 @@ def make_app():
     app["db"] = store.connect()
     app["throttle"] = Throttle()
     app["digesting"], app["digested"], app["last_digest"] = set(), {}, {}
+    app["removing"], app["remove_error"] = set(), {}  # agents being saved, then removed; why one wasn't
 
     async def background(app):
         tasks = [asyncio.create_task(watch_updates(app)), asyncio.create_task(watch_idle(app)),
