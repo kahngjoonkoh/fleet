@@ -117,3 +117,7 @@ pi ([script](skills/install-pi.sh)):
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kahngjoonkoh/fleet/main/skills/install-pi.sh | sh
 ```
+
+## License
+
+GNU AGPL v3 (`LICENSE`). If you run a modified version for others over a network, you must offer them its source. Keep `NOTICE` and the "Based on Fleet" credit it asks for (an additional term under AGPL section 7(b)).
